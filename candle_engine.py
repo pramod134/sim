@@ -1,21 +1,41 @@
-import os
-import asyncio
 import datetime as dt
 from typing import Dict, List, Any, Optional
 
-import httpx
-from zoneinfo import ZoneInfo
+try:
+    import asyncpg  # type: ignore
+except Exception:  # pragma: no cover
+    asyncpg = None  # type: ignore
 
-# Import your existing Alpaca market data module
-import market_data  # make sure this is on PYTHONPATH
+from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")
 
-# Timeframes we manage live with Twelve Data
-LIVE_TFS = ["1m", "3m", "5m", "15m", "1h"]
-
 # All supported timeframes for API / storage
 SUPPORTED_TFS = ["1m", "3m", "5m", "15m", "1h", "1d", "1w"]
+
+# Seed limits per timeframe (RTH-only; seed_date is an "as-of" cutoff at 16:00 ET)
+SEED_LIMITS = {
+    "1m": 5000,
+    "3m": 2500,
+    "5m": 1500,
+    "15m": 600,
+    "1h": 400,
+    "1d": 200,
+    "1w": 50,
+}
+
+# Candle history tables (public schema)
+CANDLE_TABLES = {
+    "1m": "candle_history_1m",
+    "3m": "candle_history_3m",
+    "5m": "candle_history_5m",
+    "15m": "candle_history_15m",
+    "1h": "candle_history_1h",
+    "1d": "candle_history_1d",
+    "1w": "candle_history_1w",
+}
+
+RTH_SESSION = "rth"
 
 # ---- Candle classification config -----------------------------------------
 
@@ -188,163 +208,26 @@ def tf_to_timedelta(tf: str) -> Optional[dt.timedelta]:
 
 
 
-# ---- Supabase helpers ------------------------------------------------------
-
-async def update_last_candle_in_spot_tf(symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
-    """
-    Update public.spot_tf.last_candle for the given symbol+timeframe.
-
-    This uses Supabase REST API. Expect env vars:
-      - SUPABASE_URL
-      - SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY or SUPABASE_KEY
-
-    If these are not set, this function is a no-op.
-    """
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        # No DB config; skip updating silently.
-        print("[DB] Skipping update_last_candle_in_spot_tf: Supabase env vars missing")
-        return
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
-    params = {
-        "symbol": f"eq.{symbol}",
-        "timeframe": f"eq.{timeframe}",
-    }
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        # not required, but cleaner: don't ask Supabase to return row data
-        "Prefer": "return=minimal",
-    }
-
-    payload = {"last_candle": candle}
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.patch(endpoint, params=params, json=payload, headers=headers)
-            if resp.status_code >= 400:
-                # Print everything we need to debug
-                print(
-                    f"[DB] Failed to update last_candle for {symbol} {timeframe} "
-                    f"(status={resp.status_code})"
-                )
-                print(f"[DB] Response text: {resp.text}")
-                resp.raise_for_status()
-        except httpx.HTTPError as e:
-            print(f"[DB] HTTP error updating last_candle for {symbol} {timeframe}: {e}")
-        except Exception as e:
-            print(f"[DB] Unexpected error updating last_candle for {symbol} {timeframe}: {e}")
-
-
-async def load_symbols_from_spot_tf() -> List[str]:
-    """
-    Fetch distinct symbols from public.spot_tf using Supabase REST API.
-    Requires:
-        SUPABASE_URL
-        SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY or SUPABASE_KEY
-    """
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        print("[WARN] Supabase env vars missing — fallback to no symbols.")
-        return []
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-    }
-
-    params = {
-        "select": "symbol",
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(endpoint, headers=headers, params=params)
-            resp.raise_for_status()
-            rows = resp.json()
-
-            # Extract symbols & remove empties / duplicates
-            symbols = sorted(
-                {row.get("symbol", "").upper() for row in rows if row.get("symbol")}
-            )
-            print(f"[SYMBOLS] Loaded from spot_tf: {symbols}")
-            return symbols
-
-        except Exception as e:
-            print(f"[ERROR] Failed to load symbols from spot_tf: {e}")
-            return []
-
-
-async def load_symbols_with_missing_last_candle() -> List[str]:
-    """
-    Fetch symbols from public.spot_tf where last_candle is NULL.
-    We treat these as needing a baseline backfill from Alpaca.
-    """
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        print("[WARN] Supabase env vars missing — cannot check missing last_candle.")
-        return []
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-    }
-    params = {
-        "select": "symbol,last_candle",
-        "last_candle": "is.null",
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(endpoint, headers=headers, params=params)
-            resp.raise_for_status()
-            rows = resp.json()
-
-            symbols = sorted(
-                {row.get("symbol", "").upper() for row in rows if row.get("symbol")}
-            )
-            if symbols:
-                print(f"[SYMBOLS] Missing last_candle (needs backfill): {symbols}")
-            return symbols
-
-        except Exception as e:
-            print(f"[ERROR] Failed to load symbols with missing last_candle: {e}")
-            return []
-
 
 
 class CandleEngine:
     """
     Maintains RTH-only candles for multiple symbols and timeframes, using:
-      - Alpaca (via market_data) for baseline history
-      - Twelve Data 1min for live updates every few minutes
+      - DB seed history (multi-tf)
+      - DB 1m playback stream + internal aggregation
+
+    Simulation-only (no live loops, no external providers, no DB writes).
     """
 
-    def __init__(self, twelve_data_api_key: str, symbols: List[str]):
-        self.td_api_key = twelve_data_api_key
+    def __init__(self, db_pool: Any, symbols: List[str]):
+        """
+        Simulation CandleEngine (DB-backed, deterministic stepper).
+
+        - Seed candles are loaded directly from DB for all supported timeframes, up to seed_date (as-of 16:00 ET).
+        - Playback streams 1m RTH candles from DB and aggregates 3m/5m/15m/1h on the fly.
+        - No external market data providers. No live loops. No DB writes.
+        """
+        self.pool = db_pool
         self.symbols = sorted({s.upper() for s in symbols if s.strip()})
 
         # candles[symbol][tf] -> list of enriched candle dicts
@@ -352,7 +235,12 @@ class CandleEngine:
         # latest_ts[symbol][tf] -> dt.datetime of last candle
         self.latest_ts: Dict[str, Dict[str, Optional[dt.datetime]]] = {}
 
-
+        # Simulation playback state
+        self.sim_clock_ts: Optional[dt.datetime] = None
+        self._after_ts_utc: Optional[dt.datetime] = None
+        self._day_buffer_1m: Dict[str, List[Dict[str, Any]]] = {}
+        self._day_buffer_idx: Dict[str, int] = {}
+        self._current_day_et: Dict[str, Optional[dt.date]] = {s: None for s in self.symbols}
 
         # ---- Micro-cluster (last few candles behavior) ------------------------
 
@@ -504,7 +392,7 @@ class CandleEngine:
             # Unknown format; just return the last one as-is
             return tf_candles[-1]
 
-        now_utc = dt.datetime.now(dt.timezone.utc)
+        now_utc = self.sim_clock_ts or dt.datetime.now(dt.timezone.utc)
 
         last = tf_candles[-1]
         try:
@@ -747,227 +635,6 @@ class CandleEngine:
 
 
 
-    # ---- Initialization from Alpaca --------------------------------------
-
-    async def initialize_from_alpaca(self) -> None:
-        """
-        For all symbols, fetch baseline candles from Alpaca via market_data.
-        Populates candles and latest_ts for all managed timeframes.
-        """
-        if not self.symbols:
-            print("CandleEngine.initialize_from_alpaca: No symbols provided.")
-            return
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            data = await market_data.fetch_multi_tf_candles(client, self.symbols)
-
-            for sym in self.symbols:
-                try:
-                    per_sym = data.get(sym, {})
-                except Exception:
-                    per_sym = {}
-
-                self.candles.setdefault(sym, {})
-                self.latest_ts.setdefault(sym, {})
-
-                for tf, c_list in per_sym.items():
-                    if tf not in SUPPORTED_TFS:
-                        continue
-
-                    enriched_list: List[Dict[str, Any]] = []
-                    self.candles[sym][tf] = enriched_list
-
-                    for raw_candle in c_list:
-                        enriched = self._enrich_candle(sym, tf, raw_candle)
-                        enriched_list.append(enriched)
-
-                    if enriched_list:
-                        last_ts = dt.datetime.fromisoformat(enriched_list[-1]["ts"])
-                        await update_last_candle_in_spot_tf(sym, tf, enriched_list[-1])
-                    else:
-                        last_ts = None
-
-                    self.latest_ts[sym][tf] = last_ts
-
-                print(
-                    f"[INIT] {sym}: "
-                    + ", ".join(
-                        f"{tf}={len(self.candles[sym].get(tf, []))}"
-                        for tf in sorted(self.candles[sym].keys())
-                    )
-                )
-
-    # ---- Dynamic symbol reload from spot_tf --------------------------------
-
-    async def reload_symbols_if_changed(self) -> None:
-        """
-        Re-fetch symbols from spot_tf. If there are new or removed symbols,
-        update self.symbols accordingly:
-
-          - For added symbols:
-              * fetch baseline Alpaca candles
-              * populate candles/latest_ts
-              * update last_candle in spot_tf
-          - For removed symbols:
-              * drop them from candles/latest_ts
-        """
-        new_symbols = await load_symbols_from_spot_tf()
-        new_set = {s.upper() for s in new_symbols if s.strip()}
-        old_set = set(self.symbols)
-
-
-        if not new_set:
-            # don't blow away existing universe if DB is temporarily empty / error
-            return
-
-        # Base added/removed sets from symbol universe change
-        added = sorted(new_set - old_set)
-        removed = sorted(old_set - new_set)
-
-        # NEW: detect symbols whose spot_tf rows have NULL last_candle
-        # and treat them as needing a baseline backfill, even if they
-        # are already in the engine's symbol set.
-        missing_last_candle = await load_symbols_with_missing_last_candle()
-        missing_set = {s.upper() for s in missing_last_candle if s.strip()} & new_set
-
-        # Union of truly new and needing-backfill symbols
-        added_all = sorted(set(added) | missing_set)
-
-        if not added_all and not removed:
-            # Symbol universe is the same and no symbol needs backfill
-            return
-
-        if added_all:
-            print(f"[SYMBOLS] Added / needs-backfill: {added_all}")
-        if removed:
-            print(f"[SYMBOLS] Removed: {removed}")
-
-        # Remove unwanted
-        for sym in removed:
-            self.candles.pop(sym, None)
-            self.latest_ts.pop(sym, None)
-
-        # Initialize new-or-needing-backfill symbols from Alpaca
-        if added_all:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                try:
-                    data = await market_data.fetch_multi_tf_candles(client, added_all)
-                except Exception as e:
-                    print(f"[INIT] Error fetching Alpaca candles for new symbols {added_all}: {e}")
-                    data = {}
-
-                for sym in added_all:
-                    per_sym = data.get(sym, {})
-                    self.candles.setdefault(sym, {})
-                    self.latest_ts.setdefault(sym, {})
-
-                    for tf, c_list in per_sym.items():
-                        if tf not in SUPPORTED_TFS:
-                            continue
-
-                        enriched_list: List[Dict[str, Any]] = []
-                        self.candles[sym][tf] = enriched_list
-
-                        for c in c_list:
-                            enriched = self._enrich_candle(sym, tf, c)
-                            enriched_list.append(enriched)
-
-                        if enriched_list:
-                            last_ts = dt.datetime.fromisoformat(enriched_list[-1]["ts"])
-                            await update_last_candle_in_spot_tf(sym, tf, enriched_list[-1])
-                        else:
-                            last_ts = None
-
-                        self.latest_ts[sym][tf] = last_ts
-
-                    print(
-                        f"[INIT-NEW] {sym}: "
-                        + ", ".join(
-                            f"{tf}={len(self.candles[sym].get(tf, []))}"
-                            for tf in sorted(self.candles[sym].keys())
-                        )
-                    )
-
-        # Finally, update the in-memory symbol list to match DB
-        self.symbols = sorted(new_set)
-        print(f"[SYMBOLS] New universe: {self.symbols}")
-
-    
-    # ---- Twelve Data integration -----------------------------------------
-
-    async def _fetch_td_1m(self, client: httpx.AsyncClient, symbol: str) -> List[Dict[str, Any]]:
-        """
-        Fetch last 20 1m candles from Twelve Data for a given symbol.
-        Returns normalized candle dicts:
-          {ts, open, high, low, close, volume}
-        RTH-only (we filter by timestamp).
-
-        NOTE: Twelve Data 'datetime' is in exchange_timezone (America/New_York),
-        so we must parse as ET and then convert to UTC before:
-          - RTH filtering (is_rth_timestamp expects UTC)
-          - downstream comparisons / aggregation.
-        """
-        params = {
-            "symbol": symbol,
-            "interval": "1min",
-            "outputsize": "20",
-            "apikey": self.td_api_key,
-        }
-        resp = await client.get("https://api.twelvedata.com/time_series", params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        # DEBUG: Show full raw TD response before any filtering
-        print(f"\n[TD][RAW_RESPONSE][{symbol}] {data}\n")
-
-
-        if "values" not in data:
-            print(f"[TD] No 'values' in response for {symbol}: {data}")
-            return []
-
-        raw_values = data["values"]
-        out: List[Dict[str, Any]] = []
-
-        for v in raw_values:
-            ts_str = v.get("datetime")
-            if not ts_str:
-                continue
-
-            try:
-                # TD gives 'datetime' in ET (exchange_timezone = America/New_York).
-                # Parse as naive ET, then localize and convert to UTC.
-                ts_et_naive = dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                continue
-
-            ts_et = ts_et_naive.replace(tzinfo=EASTERN)
-            ts_utc = ts_et.astimezone(dt.timezone.utc)
-            # DEBUG: Show timestamp comparison
-            print(f"[TD][TRACE] Compare TD={ts_utc}  vs  last_1m={self.latest_ts.get(symbol,{}).get('1m')}")
-
-            
-
-            # is_rth_timestamp expects a UTC datetime
-            if not is_rth_timestamp(ts_utc):
-                continue
-
-            try:
-                out.append(
-                    {
-                        "ts": ts_utc.isoformat(),   # store canonical UTC timestamp
-                        "open": float(v["open"]),
-                        "high": float(v["high"]),
-                        "low": float(v["low"]),
-                        "close": float(v["close"]),
-                        "volume": float(v.get("volume", 0.0)),
-                    }
-                )
-            except (KeyError, ValueError):
-                continue
-
-        # Twelve Data returns newest first; sort ascending by UTC ts
-        out.sort(key=lambda c: c["ts"])
-        print(f"[TD][TRACE] Final accepted TD candles for {symbol}: {[c['ts'] for c in out]}")
-        return out
 
     def _aggregate_from_1m(
         self,
@@ -1137,144 +804,229 @@ class CandleEngine:
                 result[tf] = new_htf
         return result
 
-    async def update_from_twelvedata_once(self) -> None:
+    # ---------------- Simulation DB loaders ----------------
+
+    @staticmethod
+    def _seed_cutoff_utc(seed_date: dt.date) -> dt.datetime:
+        """Return seed cutoff timestamp in UTC: seed_date 16:00 ET."""
+        cutoff_et = dt.datetime.combine(seed_date, dt.time(16, 0), tzinfo=EASTERN)
+        return cutoff_et.astimezone(dt.timezone.utc)
+
+    async def _fetch_candles_asof(
+        self,
+        symbol: str,
+        tf: str,
+        asof_utc: dt.datetime,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Fetch last `limit` candles for timeframe `tf` with ts <= asof_utc."""
+        table = CANDLE_TABLES[tf]
+        if tf == "1m":
+            sql = f"""
+                SELECT symbol, ts, session, open, high, low, close, volume, vwap, trade_count
+                FROM public.{table}
+                WHERE symbol = $1
+                  AND session = $2
+                  AND ts <= $3
+                ORDER BY ts DESC
+                LIMIT {limit}
+            """
+            rows = await self.pool.fetch(sql, symbol, RTH_SESSION, asof_utc)
+        else:
+            sql = f"""
+                SELECT symbol, ts, open, high, low, close, volume, vwap, trade_count
+                FROM public.{table}
+                WHERE symbol = $1
+                  AND ts <= $2
+                ORDER BY ts DESC
+                LIMIT {limit}
+            """
+            rows = await self.pool.fetch(sql, symbol, asof_utc)
+
+        candles = [dict(r) for r in rows][::-1]
+        return candles
+
+    async def load_seed(self, symbol: str, seed_date: dt.date) -> Dict[str, Any]:
         """
-        Single update cycle:
-          - Reload symbols from spot_tf if changed
-          - Only runs if now is RTH (ET)
-          - For each symbol:
-             * fetch last 20×1m from TD
-             * filter out already-known candles
-             * append new 1m
-             * aggregate to 3m,5m,15m,1h
-             * update spot_tf.last_candle for affected timeframes
+        Load seed candles (as-of seed_date 16:00 ET) for all supported timeframes.
+
+        Returns seed payload for IndicatorBot.bootstrap().
         """
+        symbol = symbol.upper().strip()
+        if symbol not in self.symbols:
+            self.symbols.append(symbol)
+            self.symbols = sorted(set(self.symbols))
+            self._current_day_et[symbol] = None
 
-        print("\n==============================")
-        print("[TD][TRACE] Starting update cycle")
-        now_et = dt.datetime.now(dt.timezone.utc).astimezone(EASTERN)
-        print(f"[TD][TRACE] Current ET time = {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"[TD][TRACE] is_rth_now() = {is_rth_now()}")
-        print("==============================")
+        asof_utc = self._seed_cutoff_utc(seed_date)
 
-        # Auto-reload symbols from DB first
-        try:
-            await self.reload_symbols_if_changed()
-        except Exception as e:
-            print(f"[SYMBOLS] Error reloading symbols: {e}")
+        self.candles.setdefault(symbol, {})
+        self.latest_ts.setdefault(symbol, {})
+        self._day_buffer_1m.setdefault(symbol, [])
+        self._day_buffer_idx.setdefault(symbol, 0)
 
-        if not is_rth_now():
-            print("[TD] Outside RTH; skipping Twelve Data update.")
-            return
+        seed_candles: Dict[str, List[Dict[str, Any]]] = {}
 
-        if not self.symbols:
-            print("[TD] No symbols to update.")
-            return
+        for tf in SUPPORTED_TFS:
+            limit = SEED_LIMITS.get(tf)
+            if not limit:
+                continue
+            raw = await self._fetch_candles_asof(symbol, tf, asof_utc, limit)
+            enriched: List[Dict[str, Any]] = []
+            for c in raw:
+                c_norm = {
+                    "ts": c["ts"].isoformat() if isinstance(c["ts"], dt.datetime) else str(c["ts"]),
+                    "open": float(c["open"]),
+                    "high": float(c["high"]),
+                    "low": float(c["low"]),
+                    "close": float(c["close"]),
+                    "volume": float(c.get("volume") or 0.0),
+                }
+                if "vwap" in c and c["vwap"] is not None:
+                    c_norm["vwap"] = float(c["vwap"])
+                if "trade_count" in c and c["trade_count"] is not None:
+                    c_norm["trade_count"] = int(c["trade_count"])
+                if "session" in c and c["session"] is not None:
+                    c_norm["session"] = c["session"]
+                e = self._enrich_candle(symbol, tf, c_norm)
+                enriched.append(e)
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            for sym in self.symbols:
-                print(f"[TD][TRACE] Processing symbol {sym}")
-                try:
-                    td_candles = await self._fetch_td_1m(client, sym)
-                    print(f"[TD][TRACE] Raw TD candles fetched: {len(td_candles)}")
-                except Exception as e:
-                    print(f"[TD] Error fetching Twelve Data candles for {sym}: {e}")
-                    continue
+            self.candles[symbol][tf] = enriched
+            self.latest_ts[symbol][tf] = (
+                dt.datetime.fromisoformat(enriched[-1]["ts"]) if enriched else None
+            )
+            seed_candles[tf] = enriched
 
-                if not td_candles:
-                    continue
+        self.sim_clock_ts = self.latest_ts[symbol].get("1m")
+        self._after_ts_utc = asof_utc
+        self._current_day_et[symbol] = None
+        self._day_buffer_1m[symbol] = []
+        self._day_buffer_idx[symbol] = 0
 
-                self.candles.setdefault(sym, {})
-                self.latest_ts.setdefault(sym, {})
-                for tf in LIVE_TFS:
-                    self.candles[sym].setdefault(tf, [])
-                    self.latest_ts[sym].setdefault(tf, None)
+        return {
+            "symbol": symbol,
+            "as_of": self.sim_clock_ts.isoformat() if self.sim_clock_ts else asof_utc.isoformat(),
+            "candles": seed_candles,
+        }
 
-                last_1m_ts = self.latest_ts[sym]["1m"]
-                new_1m: List[Dict[str, Any]] = []
-                for c in td_candles:
-                    ts = dt.datetime.fromisoformat(c["ts"])
-                    if last_1m_ts is None or ts > last_1m_ts:
-                        enriched = self._enrich_candle(sym, "1m", c)
-                        self.candles[sym]["1m"].append(enriched)
-                        self.latest_ts[sym]["1m"] = ts
-                        new_1m.append(enriched)
+    async def _find_next_rth_1m_ts(self, symbol: str) -> Optional[dt.datetime]:
+        """Find the next available RTH 1m candle timestamp after self._after_ts_utc."""
+        if self._after_ts_utc is None:
+            return None
+        sql = f"""
+            SELECT ts
+            FROM public.{CANDLE_TABLES['1m']}
+            WHERE symbol = $1
+              AND session = $2
+              AND ts > $3
+            ORDER BY ts ASC
+            LIMIT 1
+        """
+        row = await self.pool.fetchrow(sql, symbol, RTH_SESSION, self._after_ts_utc)
+        return row["ts"] if row else None
 
-                print(f"[TD][TRACE] New 1m candles after filtering: {len(new_1m)}")
+    async def _load_next_day_buffer(self, symbol: str) -> bool:
+        """
+        Load next trading day's RTH 1m candles into buffer.
+        Returns False if no more data is available.
+        """
+        next_ts = await self._find_next_rth_1m_ts(symbol)
+        if not next_ts:
+            return False
 
+        day_et = (next_ts.astimezone(EASTERN)).date()
+        sql = f"""
+            SELECT symbol, ts, session, open, high, low, close, volume, vwap, trade_count
+            FROM public.{CANDLE_TABLES['1m']}
+            WHERE symbol = $1
+              AND session = $2
+              AND (ts AT TIME ZONE 'America/New_York')::date = $3
+            ORDER BY ts ASC
+        """
+        rows = await self.pool.fetch(sql, symbol, RTH_SESSION, day_et)
+        buf = [dict(r) for r in rows]
 
-                if not new_1m:
-                    continue
+        self._day_buffer_1m[symbol] = buf
+        self._day_buffer_idx[symbol] = 0
+        self._current_day_et[symbol] = day_et
 
-                # Aggregate new 1m to higher TFs
-                print(f"[TD][TRACE] Aggregating {len(new_1m)} new 1m candles for {sym}")
-                new_by_tf = self._aggregate_new_1m(sym, new_1m)
-                print(f"[TD][TRACE] Aggregation result: { {tf: len(lst) for tf, lst in new_by_tf.items()} }")
+        if buf:
+            self._after_ts_utc = buf[-1]["ts"]
+        return True
 
+    async def step(self, symbol: str) -> Dict[str, Any]:
+        """
+        Advance simulation by exactly one 1m candle for `symbol`.
 
-                print(f"[TD] {sym}: +{len(new_1m)} new 1m candles")
+        Returns event payload with newly produced candles.
+        Raises StopAsyncIteration if no more candles are available.
+        """
+        symbol = symbol.upper().strip()
+        if symbol not in self.candles:
+            raise ValueError(f"Symbol not seeded: {symbol}. Call load_seed() first.")
 
-                # Update last_candle in DB for affected TFs
-                # 1m
+        buf = self._day_buffer_1m.get(symbol, [])
+        idx = self._day_buffer_idx.get(symbol, 0)
+        if idx >= len(buf):
+            ok = await self._load_next_day_buffer(symbol)
+            if not ok:
+                raise StopAsyncIteration(f"No more 1m candles available for {symbol}.")
+            buf = self._day_buffer_1m[symbol]
+            idx = 0
 
+        raw = buf[idx]
+        self._day_buffer_idx[symbol] = idx + 1
 
+        c_norm = {
+            "ts": raw["ts"].isoformat(),
+            "open": float(raw["open"]),
+            "high": float(raw["high"]),
+            "low": float(raw["low"]),
+            "close": float(raw["close"]),
+            "volume": float(raw.get("volume") or 0.0),
+            "session": raw.get("session"),
+        }
+        if raw.get("vwap") is not None:
+            c_norm["vwap"] = float(raw["vwap"])
+        if raw.get("trade_count") is not None:
+            c_norm["trade_count"] = int(raw["trade_count"])
 
-                # ---------------------------------------------
-                # Update last_candle in DB for affected TFs,
-                # using ONLY *closed* candles.
-                # ---------------------------------------------
+        e1 = self._enrich_candle(symbol, "1m", c_norm)
+        self.candles[symbol]["1m"].append(e1)
+        self.latest_ts[symbol]["1m"] = dt.datetime.fromisoformat(e1["ts"])
 
-                # 1m: typically Twelve Data gives closed 1m bars,
-                # but we still run through the same helper for consistency.
-                last_closed_1m = self._get_last_closed_candle(sym, "1m")
-                if last_closed_1m is not None:
-                    await update_last_candle_in_spot_tf(sym, "1m", last_closed_1m)
+        self.sim_clock_ts = self.latest_ts[symbol]["1m"]
 
-                # Higher timeframes: only write the last *closed* bar.
-                for tf in new_by_tf.keys():
-                    last_closed = self._get_last_closed_candle(sym, tf)
-                    if last_closed is not None:
-                        await update_last_candle_in_spot_tf(sym, tf, last_closed)
+        new_payload: Dict[str, List[Dict[str, Any]]] = {
+            "1m": [e1],
+            "3m": [],
+            "5m": [],
+            "15m": [],
+            "1h": [],
+            "1d": [],
+            "1w": [],
+        }
 
-                print(f"[TD][TRACE] DB updated for {sym} (1m + higher TFs, closed only)")
+        new_1m_list = [e1]
+        for tf in ("3m", "5m", "15m", "1h"):
+            produced = self._aggregate_from_1m(symbol, tf, new_1m_list)
+            if produced:
+                self.candles[symbol][tf].extend(produced)
+                self.latest_ts[symbol][tf] = dt.datetime.fromisoformat(produced[-1]["ts"])
+                new_payload[tf] = produced
 
-
-    # ---- Public accessors / loop ------------------------------------------
+        return {
+            "symbol": symbol,
+            "sim_clock": self.sim_clock_ts.isoformat() if self.sim_clock_ts else None,
+            "new": new_payload,
+        }
 
     def get_candles(self, symbol: str, timeframe: str) -> List[Dict[str, Any]]:
         """
         Return list of enriched candles for the given symbol+timeframe.
         """
-        sym = symbol.upper()
-        return self.candles.get(sym, {}).get(timeframe, [])
+        symbol = symbol.upper()
+        if symbol not in self.candles:
+            return []
+        return self.candles[symbol].get(timeframe, [])
 
-    async def run_loop(self, interval_seconds: int = 180):
-        print(f"[ENGINE] Starting live update loop (interval={interval_seconds}s).")
-        while True:
-            try:
-                await self.update_from_twelvedata_once()
-            except Exception as e:
-                print(f"[ENGINE] Exception inside run_loop: {e}")
-            await asyncio.sleep(interval_seconds)
-
-
-
-# ---- Shared init helper ---------------------------------------------------
-
-async def init_engine_from_env() -> "CandleEngine":
-    """
-    Shared initializer: load symbols from spot_tf, create engine,
-    bootstrap from Alpaca.
-    """
-    td_key = os.getenv("TWELVEDATA_API_KEY")
-    if not td_key:
-        raise RuntimeError("TWELVEDATA_API_KEY env var is required")
-
-    symbols = await load_symbols_from_spot_tf()
-    if not symbols:
-        print("No symbols loaded from spot_tf; exiting.")
-        raise RuntimeError("No symbols loaded from spot_tf")
-
-    engine = CandleEngine(td_key, symbols)
-    await engine.initialize_from_alpaca()
-    return engine
