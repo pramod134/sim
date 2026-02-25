@@ -4,3 +4,5 @@ httpx
 pydantic
 python-dotenv
 loguru
+asyncpg
+python-dateutil
