@@ -91,7 +91,6 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         params={
             "select": "*",
             "start_sim": "eq.y",
-            "order": "updated_at.asc.nullslast",
             "limit": "1",
         },
     )
@@ -116,7 +115,6 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
             "started_at": now,
             "finished_at": None,
             "error_message": None,
-            "updated_at": now,
         },
         returning="representation",
     )
@@ -138,7 +136,7 @@ async def _mark_done(client: httpx.AsyncClient, symbol: str) -> None:
         key,
         "sim_ticker",
         params={"symbol": f"eq.{symbol}"},
-        payload={"status": "done", "finished_at": now, "updated_at": now},
+        payload={"status": "done", "finished_at": now},
         returning="minimal",
     )
 
@@ -152,7 +150,7 @@ async def _mark_error(client: httpx.AsyncClient, symbol: str, msg: str) -> None:
         key,
         "sim_ticker",
         params={"symbol": f"eq.{symbol}"},
-        payload={"status": "error", "error_message": msg[:2000], "finished_at": now, "updated_at": now},
+        payload={"status": "error", "error_message": msg[:2000], "finished_at": now},
         returning="minimal",
     )
 
