@@ -1,12 +1,7 @@
-import os
 import math
-import asyncio
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
-
-from zone_finder import build_symbol_zone_map, upsert_symbol_zone_map
 
 from candle_engine import CandleEngine, SUPPORTED_TFS
 
@@ -17,8 +12,6 @@ from indicator_calc2 import compute_advanced_extras
 
 
 from strategies import evaluate_strategies
-
-from liquidity_pool_builder import build_liquidity_pool
 
 # Events engine (NEW)
 from spot_event import SpotEventContext, compute_spot_events
@@ -50,301 +43,22 @@ async def update_indicators_in_spot_tf(
     strategies: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """
-    Patch public.spot_tf for the given symbol+timeframe with the computed indicators.
-
-    Uses Supabase REST. Requires:
-      - SUPABASE_URL
-      - SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY or SUPABASE_KEY
+    Live-mode DB write helper (disabled in simulation).
+    In simulation we keep everything in-memory; this is a no-op.
     """
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        print("[INDICATORS][DB] Skipping update: Supabase env vars missing")
-        return
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
-    params = {
-        "symbol": f"eq.{symbol}",
-        "timeframe": f"eq.{timeframe}",
-    }
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Prefer": "return=minimal",
-    }
-
-    payload: Dict[str, Any] = {
-        "trend": trend,
-        "pivots": pivots,
-        "swings": swings,
-        "structural": structural,
-        "fvgs": fvgs,
-        "liquidity": liquidity,
-        "volume_profile": volume_profile,
-        "extras": extras,
-        "extras_advanced": extras_advanced,
-        "last_updated": dt.datetime.now(dt.timezone.utc).isoformat(),
-    }
-
-    if structure_state is not None:
-        payload["structure_state"] = structure_state
-    if strategies is not None:
-        payload["strategies"] = strategies
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.patch(
-                endpoint,
-                params=params,
-                json=payload,
-                headers=headers,
-            )
-            if resp.status_code >= 400:
-                print(
-                    f"[INDICATORS][DB] Failed to update indicators for "
-                    f"{symbol} {timeframe} (status={resp.status_code})"
-                )
-                print(f"[INDICATORS][DB] Response text: {resp.text}")
-                resp.raise_for_status()
-        except httpx.HTTPError as e:
-            print(f"[INDICATORS][DB] HTTP error for {symbol} {timeframe}: {e}")
-        except Exception as e:
-            print(f"[INDICATORS][DB] Unexpected error for {symbol} {timeframe}: {e}")
+    return
 
 
-async def fetch_spot_tf_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
+async def needs_backfill_structure_state(symbol: str, timeframe: str) -> bool:
     """
-    Fetch all spot_tf rows for a symbol across all timeframes.
-    Used by ZoneFinder to build a unified (Option A) zone map.
+    Simulation mode: no DB state to backfill; always False.
     """
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-    if not supabase_url or not supabase_key:
-        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_* key env vars")
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Accept": "application/json",
-    }
-
-    params = {
-        "symbol": f"eq.{symbol.upper()}",
-        "select": "*",
-    }
-
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        r = await client.get(endpoint, headers=headers, params=params)
-        if r.status_code != 200:
-            raise RuntimeError(f"spot_tf fetch failed ({r.status_code}): {r.text}")
-        return r.json()
-
-
-
-async def upsert_spot_liquidity_pool(
-    symbol: str,
-    asof: str,
-    pool_version: str,
-    levels: List[Dict[str, Any]],
-    stats: Dict[str, Any],
-    tol_price: Optional[float] = None,
-) -> None:
-    """Upsert current liquidity pool snapshot into public.spot_liquidity_pool."""
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        print("[LIQ_POOL][DB] Skipping upsert: Supabase env vars missing")
-        return
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_liquidity_pool"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-    }
-
-    payload: Dict[str, Any] = {
-        "symbol": symbol.upper(),
-        "asof": asof,
-        "pool_version": pool_version,
-        "levels": levels,
-        "stats": stats,
-        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-    }
-    if tol_price is not None:
-        payload["tol_price"] = tol_price
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(endpoint, json=payload, headers=headers)
-        if resp.status_code >= 400:
-            print(f"[LIQ_POOL][DB] Upsert failed for {symbol} (status={resp.status_code})")
-            print(f"[LIQ_POOL][DB] Response text: {resp.text}")
-            resp.raise_for_status()
-
-
-# ---------------------------------------------------------------------------
-# Supabase helper: fetch liquidity pool row (for sweep detection)
-# ---------------------------------------------------------------------------
-async def fetch_spot_liquidity_pool_row(symbol: str) -> Optional[Dict[str, Any]]:
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-    if not supabase_url or not supabase_key:
-        return None
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_liquidity_pool"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Accept": "application/json",
-    }
-    params = {
-        "symbol": f"eq.{symbol.upper()}",
-        "select": "*",
-        "order": "updated_at.desc",
-        "limit": "1",
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            r = await client.get(endpoint, headers=headers, params=params)
-            if r.status_code != 200:
-                return None
-            rows = r.json() or []
-            return rows[0] if rows else None
-        except Exception:
-            return None
-
-
-# ---------------------------------------------------------------------------
-# Supabase helper: upsert spot_events row (verification/audit)
-# ---------------------------------------------------------------------------
-async def upsert_spot_events_row(
-    symbol: str,
-    timeframe: str,
-    events_latest: Dict[str, Any],
-    events_active: Dict[str, Any],
-    events_recent: List[Dict[str, Any]],
-) -> None:
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        print("[EVENTS][DB] Skipping upsert: Supabase env vars missing")
-        return
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_events"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-    }
-
-    payload: Dict[str, Any] = {
-        "symbol": symbol.upper(),
-        "timeframe": timeframe,
-        "last_updated": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "events_latest": events_latest,
-        "events_active": events_active,
-        "events_recent": events_recent,
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(endpoint, json=payload, headers=headers)
-        if resp.status_code >= 400:
-            print(f"[EVENTS][DB] Upsert failed for {symbol} {timeframe} (status={resp.status_code})")
-            print(f"[EVENTS][DB] Response text: {resp.text}")
-            resp.raise_for_status()
-
-
-
-
-
+    return False
 
 
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
-async def needs_backfill_structure_state(symbol: str, timeframe: str) -> bool:
-    """
-    Return True if spot_tf.structure_state is NULL/empty for this symbol+timeframe.
-    Used to force a one-time indicator backfill even when the last candle ts
-    has not changed (e.g. after deleting/recreating spot_tf rows).
-    """
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        or os.getenv("SUPABASE_SERVICE_KEY")
-        or os.getenv("SUPABASE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        # Can't check; don't force backfill in this case.
-        return False
-
-    endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
-    params = {
-        "symbol": f"eq.{symbol}",
-        "timeframe": f"eq.{timeframe}",
-        "select": "structure_state",
-    }
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Accept": "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(endpoint, params=params, headers=headers)
-            resp.raise_for_status()
-            rows = resp.json() or []
-        except Exception as e:
-            print(
-                f"[INDICATORS][DB] Failed to check structure_state for "
-                f"{symbol} {timeframe}: {e}"
-            )
-            return False
-
-    if not rows:
-        # No row → don't force backfill here (engine should create rows first).
-        return False
-
-    ss = rows[0].get("structure_state")
-
-    # Treat NULL, empty string, or purely whitespace as "missing"
-    if ss is None:
-        return True
-    if isinstance(ss, str) and not ss.strip():
-        return True
-
-    return False
-
-
 
 def _ensure_dt(ts_raw: Any) -> dt.datetime:
     """
@@ -614,30 +328,25 @@ def _enrich_vp_for_tf(
 
 class IndicatorBot:
     """
-    Reads enriched candles from CandleEngine and keeps spot_tf indicators fresh
-    for all SUPPORTED_TFS.
+    Simulation mode:
+      - Runner drives CandleEngine.step()
+      - Runner calls IndicatorBot.bootstrap(seed_data) once
+      - Runner calls IndicatorBot.process(events) each step
 
-    v1 responsibilities:
-      - For each (symbol, timeframe):
-          * detect if there's a new last candle (ts changed)
-          * compute:
-              - trend (EMA50/EMA200 + distances + state)
-              - swings (HH/HL/LH/LL pivots)
-              - fvgs (simple 3-candle FVGs)
-              - liquidity (levels from swings)
-              - volume_profile (simple price/volume bins + POC)
-              - extras (ATR, vol regime)
-              - structure_state (trend + swings summary)
-          * patch those into spot_tf via Supabase REST.
+    No polling. No DB writes. Everything stored in caches.
     """
 
     def __init__(
         self,
         engine: CandleEngine,
         timeframes: Optional[List[str]] = None,
+        enable_zone_finder: bool = False,
+        enable_liquidity_pool: bool = False,
     ):
         self.engine = engine
         self.timeframes = timeframes or list(SUPPORTED_TFS)
+        self.enable_zone_finder = enable_zone_finder
+        self.enable_liquidity_pool = enable_liquidity_pool
         # last_processed_ts[symbol][tf] -> datetime of last processed candle
         self.last_processed_ts: Dict[str, Dict[str, dt.datetime]] = {}
         # last_snapshots[symbol][tf] -> most recent snapshot dict (for multi-TF VP context)
@@ -652,302 +361,278 @@ class IndicatorBot:
         # Liquidity pool cache per symbol (NEW)
         self.liq_pool_cache: Dict[str, Dict[str, Any]] = {}
 
-
-
-    
+        # Simulation output caches (NEW)
+        # spot_tf_cache[(symbol, tf)] -> latest computed snapshot and metadata
+        self.spot_tf_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # trades_cache[run_id] optional, runner can also own this
+        self.trades_cache: Dict[str, List[Dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ #
-    # Public loop
+    # Simulation API (Runner-driven)
     # ------------------------------------------------------------------ #
 
-    async def run_loop(self, interval_seconds: int = 60) -> None:
+    async def bootstrap(self, seed_data: Dict[str, Any]) -> None:
         """
-        Periodically scan all symbols/timeframes and update indicators
-        whenever a new candle has appeared.
-        """
-        print(f"[INDICATORS] Starting indicator bot (interval={interval_seconds}s)")
+        One-time initialization from seed candles.
 
-        while True:
+        seed_data shape:
+          { "symbol": str, "as_of": str, "candles": { tf: [enriched_candles...] } }
+        """
+        symbol = (seed_data.get("symbol") or "").upper()
+        candles_by_tf: Dict[str, List[Dict[str, Any]]] = seed_data.get("candles") or {}
+        if not symbol or not candles_by_tf:
+            raise ValueError("bootstrap requires seed_data with symbol and candles")
+
+        # Initialize internal maps
+        self.last_processed_ts.setdefault(symbol, {})
+        self.last_snapshots.setdefault(symbol, {})
+        self.last_events_state.setdefault(symbol, {})
+        self.last_fvgs_cache.setdefault(symbol, {})
+
+        # Compute initial snapshots for all timeframes with enough candles
+        for tf in self.timeframes:
+            candles = candles_by_tf.get(tf) or []
+            if len(candles) < 10:
+                continue
+
+            # In simulation, seed candles are assumed closed and ordered
+            closed_candles = candles
+
+            # Session candles (advanced extras)
+            last_candle = closed_candles[-1]
+            session_date = last_candle.get("date_et")
+            if session_date:
+                session_candles = [c for c in closed_candles if c.get("date_et") == session_date]
+            else:
+                session_candles = closed_candles
+
+            snapshot = compute_all_indicators(closed_candles)
+            advanced = compute_advanced_extras(
+                candles=closed_candles,
+                base_snapshot=snapshot,
+                htf_snapshot=None,
+                session_candles=session_candles,
+            )
+
+            # Multi-TF VP enrichment map will be built after collecting all snapshots
+            self.last_snapshots[symbol][tf] = snapshot
+            ts_dt = _ensure_dt(last_candle.get("ts"))
+            self.last_processed_ts[symbol][tf] = ts_dt
+
+            self.spot_tf_cache[(symbol, tf)] = {
+                "symbol": symbol,
+                "timeframe": tf,
+                "asof": ts_dt.isoformat(),
+                "snapshot": snapshot,
+                "extras_advanced": advanced,
+                "strategies": [],
+            }
+
+        # Run VP enrichment once with the multi-TF map
+        snap_map: Dict[str, Dict[str, Any]] = dict(self.last_snapshots.get(symbol, {}))
+        for tf, snapshot in snap_map.items():
             try:
-                await self._update_all_symbols()
+                _enrich_vp_for_tf(current_tf=tf, current_snapshot=snapshot, snapshots_by_tf=snap_map)
             except Exception as e:
-                print(f"[INDICATORS] Exception in run_loop: {e}")
-            await asyncio.sleep(interval_seconds)
+                print(f"[VP][ENRICH] bootstrap failed for {symbol} {tf}: {e}")
 
     # ------------------------------------------------------------------ #
     # Core update logic
     # ------------------------------------------------------------------ #
 
-    
-    async def _update_all_symbols(self) -> None:
-        symbols = getattr(self.engine, "symbols", [])
-        if not symbols:
-            print("[INDICATORS] No symbols in engine yet, skipping cycle")
+    async def process(self, events: Dict[str, Any]) -> None:
+        """
+        Process incremental candle events (Runner-driven).
+
+        events shape:
+          {
+            "symbol": str,
+            "sim_clock": str,
+            "new": { tf: [candle...] }
+          }
+
+        CandleEngine guarantees that any candles emitted here are closed for their timeframe.
+        """
+        sym_upper = (events.get("symbol") or "").upper()
+        if not sym_upper:
             return
-    
-        for sym in symbols:
-            sym_upper = sym.upper()
-            symbol_candles = self.engine.candles.get(sym_upper, {})
 
-            # Ensure we have liquidity pool row cached for sweep detection (NEW)
-            if sym_upper not in self.liq_pool_cache:
-                row = await fetch_spot_liquidity_pool_row(sym_upper)
-                if row:
-                    self.liq_pool_cache[sym_upper] = row
-    
-            # Collect all TF updates first so we can do multi-TF VP enrichment
-            pending: Dict[str, Dict[str, Any]] = {}
-    
-            for tf in self.timeframes:
-                candles = symbol_candles.get(tf)
-                if not candles or len(candles) < 10:
-                    continue
-    
-                # --------------------------------------------------
-                # CLOSED-CANDLE FILTER
-                # --------------------------------------------------
-                tf_delta = _tf_to_timedelta(tf)
-                now_utc = dt.datetime.now(dt.timezone.utc)
-    
-                closed_candles = candles
-                if tf_delta is not None:
-                    raw_last = candles[-1]
-                    raw_last_ts = _ensure_dt(raw_last.get("ts"))
-                    if now_utc < (raw_last_ts + tf_delta):
-                        closed_candles = candles[:-1]
-    
-                if not closed_candles or len(closed_candles) < 10:
-                    continue
-    
-                last_candle = closed_candles[-1]
-                ts_dt = _ensure_dt(last_candle.get("ts"))
-    
-                prev_ts = self.last_processed_ts.get(sym_upper, {}).get(tf)
-                needs_backfill = await needs_backfill_structure_state(sym_upper, tf)
-    
-                if (not needs_backfill) and (prev_ts is not None) and (ts_dt <= prev_ts):
-                    continue
-    
-                # Session candles (for advanced extras)
-                session_date = last_candle.get("date_et")
-                if session_date:
-                    session_candles = [c for c in closed_candles if c.get("date_et") == session_date]
-                else:
-                    session_candles = closed_candles
-    
-                # Base indicators (single pass)
-                snapshot = compute_all_indicators(closed_candles)
-    
-                # Advanced extras (needs base_snapshot)
-                advanced = compute_advanced_extras(
-                    candles=closed_candles,
-                    base_snapshot=snapshot,
-                    htf_snapshot=None,
-                    session_candles=session_candles,
-                )
-    
-                pending[tf] = {
-                    "closed_candles": closed_candles,
-                    "session_candles": session_candles,
-                    "snapshot": snapshot,
-                    "extras_advanced": advanced,
-                    "last_candle": last_candle,
-                    "ts_dt": ts_dt,
-                }
-    
-            if not pending:
+        new_map: Dict[str, List[Dict[str, Any]]] = (events.get("new") or {})
+        if not new_map:
+            return
+
+        # Determine which TFs changed this step
+        changed_tfs = [tf for tf, lst in new_map.items() if lst]
+        if not changed_tfs:
+            return
+
+        self.last_processed_ts.setdefault(sym_upper, {})
+        self.last_snapshots.setdefault(sym_upper, {})
+        self.last_events_state.setdefault(sym_upper, {})
+        self.last_fvgs_cache.setdefault(sym_upper, {})
+
+        pending: Dict[str, Dict[str, Any]] = {}
+
+        # Build pending packs for changed TFs only
+        for tf in changed_tfs:
+            if tf not in self.timeframes:
                 continue
-    
-            # Build multi-TF snapshot map (use cached snapshots for TFs that didn't update this cycle)
-            snap_map: Dict[str, Dict[str, Any]] = {}
-            snap_map.update(self.last_snapshots.get(sym_upper, {}))
-            for tf, pack in pending.items():
-                snap_map[tf] = pack["snapshot"]
-    
-            # Enrich VP for each pending TF with multi-TF context
-            for tf, pack in pending.items():
-                try:
-                    _enrich_vp_for_tf(
-                        current_tf=tf,
-                        current_snapshot=pack["snapshot"],
-                        snapshots_by_tf=snap_map,
-                    )
-                except Exception as e:
-                    print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
-    
-            # Now write to DB (and update caches)
-            for tf, pack in pending.items():
-                snapshot = pack["snapshot"]
-                last_candle = pack["last_candle"]
-                ts_dt = pack["ts_dt"]
-    
-                trend = snapshot["trend"]
-                pivots = snapshot["pivots"]
-                swings = snapshot["swings"]
-                structural = snapshot["structural"]
-                fvgs = snapshot["fvgs"]
-                liquidity = snapshot["liquidity"]
-                volume_profile = snapshot["volume_profile"]
-                extras = snapshot["extras"]
-                structure_state = snapshot["structure_state"]
-                extras_advanced = pack["extras_advanced"]
-    
-                cluster = last_candle.get("cluster") or {}
-    
-                strategies = evaluate_strategies(
-                    symbol=sym_upper,
-                    timeframe=tf,
-                    candles=pack["closed_candles"],
-                    swings=swings,
-                    fvgs=fvgs,
-                    liquidity=liquidity,
-                    trend=trend,
-                    cluster=cluster,
-                    volume_profile=volume_profile,
-                    htf_swings=None,
-                )
+            candles = self.engine.get_candles(sym_upper, tf)
+            if not candles or len(candles) < 10:
+                continue
 
-                # ---------------- EVENTS (NEW) ----------------
-                prev_state = self.last_events_state.get(sym_upper, {}).get(tf) or {}
-                prev_latest = prev_state.get("events_latest")
-                prev_active = prev_state.get("events_active")
-                prev_recent = prev_state.get("events_recent")
+            closed_candles = candles  # simulation: engine emits closed tf candles only
+            last_candle = closed_candles[-1]
+            ts_dt = _ensure_dt(last_candle.get("ts"))
 
-                fvgs_prev = self.last_fvgs_cache.get(sym_upper, {}).get(tf)
-                liq_row = self.liq_pool_cache.get(sym_upper)
+            prev_ts = self.last_processed_ts.get(sym_upper, {}).get(tf)
+            if prev_ts is not None and ts_dt <= prev_ts:
+                continue
 
-                # Build reference lists from YOUR stored shapes:
-                # swings: {"asof":..., "swings":[{ts,type,price,state,...}, ...]}
-                swing_items = (swings or {}).get("swings") or []
-                swing_highs = [
-                    {"ts": s.get("ts"), "price": s.get("price")}
-                    for s in swing_items
-                    if s.get("type") == "swing_high" and s.get("state") == "active"
-                ]
-                swing_lows = [
-                    {"ts": s.get("ts"), "price": s.get("price")}
-                    for s in swing_items
-                    if s.get("type") == "swing_low" and s.get("state") == "active"
-                ]
+            # Session candles (advanced extras)
+            session_date = last_candle.get("date_et")
+            if session_date:
+                session_candles = [c for c in closed_candles if c.get("date_et") == session_date]
+            else:
+                session_candles = closed_candles
 
-                # structural: {"asof":..., "points":[{ts,type,label,price,...}, ...]}
-                structural_points = (structural or {}).get("points") or []
-                structural_highs = [
-                    {"ts": p.get("ts"), "price": p.get("price")}
-                    for p in structural_points
-                    if p.get("type") == "swing_high" and p.get("label") in ("HH", "LH")
-                ]
-                structural_lows = [
-                    {"ts": p.get("ts"), "price": p.get("price")}
-                    for p in structural_points
-                    if p.get("type") == "swing_low" and p.get("label") in ("LL", "HL")
-                ]
+            snapshot = compute_all_indicators(closed_candles)
+            advanced = compute_advanced_extras(
+                candles=closed_candles,
+                base_snapshot=snapshot,
+                htf_snapshot=None,
+                session_candles=session_candles,
+            )
 
-                ev_ctx = SpotEventContext(
-                    symbol=sym_upper,
-                    timeframe=tf,
-                    last_candle=last_candle,
-                    liquidity_pool_row=liq_row,
-                    structural_highs=structural_highs,
-                    structural_lows=structural_lows,
-                    swing_highs=swing_highs,
-                    swing_lows=swing_lows,
-                    structure_state=structure_state or "",
-                    fvgs_now=fvgs,
-                    fvgs_prev=fvgs_prev,
-                    prev_events_latest=prev_latest,
-                    prev_events_active=prev_active,
-                    prev_events_recent=prev_recent,
-                )
+            pending[tf] = {
+                "closed_candles": closed_candles,
+                "session_candles": session_candles,
+                "snapshot": snapshot,
+                "extras_advanced": advanced,
+                "last_candle": last_candle,
+                "ts_dt": ts_dt,
+            }
 
-                ev_out = compute_spot_events(ev_ctx)
-    
-                await update_indicators_in_spot_tf(
-                    symbol=sym_upper,
-                    timeframe=tf,
-                    trend=trend,
-                    pivots=pivots,
-                    swings=swings,
-                    structural=structural,
-                    fvgs=fvgs,
-                    liquidity=liquidity,
-                    volume_profile=volume_profile,
-                    extras=extras,
-                    extras_advanced=extras_advanced,
-                    structure_state=structure_state,
-                    strategies=strategies,
-                )
+        if not pending:
+            return
 
-                # Write spot_events only if changed (NEW)
-                if ev_out.get("changed"):
-                    await upsert_spot_events_row(
-                        symbol=sym_upper,
-                        timeframe=tf,
-                        events_latest=ev_out["events_latest"],
-                        events_active=ev_out["events_active"],
-                        events_recent=ev_out["events_recent"],
-                    )
+        # Multi-TF snapshot map (use cached snapshots for TFs not updated this step)
+        snap_map: Dict[str, Dict[str, Any]] = {}
+        snap_map.update(self.last_snapshots.get(sym_upper, {}))
+        for tf, pack in pending.items():
+            snap_map[tf] = pack["snapshot"]
 
-                # Update caches (NEW)
-                self.last_events_state.setdefault(sym_upper, {})[tf] = {
-                    "events_latest": ev_out["events_latest"],
-                    "events_active": ev_out["events_active"],
-                    "events_recent": ev_out["events_recent"],
-                }
-                self.last_fvgs_cache.setdefault(sym_upper, {})[tf] = list(fvgs or [])
-    
-                # Cache for next cycle's multi-TF enrichment
-                self.last_snapshots.setdefault(sym_upper, {})[tf] = snapshot
-                self.last_processed_ts.setdefault(sym_upper, {})[tf] = ts_dt
-    
-                print(
-                    f"[INDICATORS] Updated {sym_upper} {tf} "
-                    f"(ts={ts_dt.isoformat()}, trend={trend.get('state')})"
-                )
-    
-            # ---------------- ZONE FINDER (Option A: all TFs -> one symbol map) ----------------
+        # Enrich VP for pending TFs with multi-TF context
+        for tf, pack in pending.items():
             try:
-                spot_rows = await fetch_spot_tf_rows_for_symbol(sym_upper)
-
-                pool = build_liquidity_pool(
-                    symbol=sym_upper,
-                    spot_tf_rows=spot_rows,
-                    candle_engine=self.engine,
-                )
-                await upsert_spot_liquidity_pool(
-                    symbol=sym_upper,
-                    asof=pool["asof"],
-                    pool_version=pool.get("pool_version") or "liq_pool_v1",
-                    levels=pool.get("levels") or [],
-                    stats=pool.get("stats") or {},
-                    tol_price=pool.get("tol_price"),
-                )
-                print(f"[LIQ_POOL] Updated spot_liquidity_pool for {sym_upper} (levels={len(pool.get('levels') or [])})")
-
-                # Refresh liquidity pool cache from computed pool (NEW)
-                self.liq_pool_cache[sym_upper] = {
-                    "symbol": sym_upper,
-                    "asof": pool.get("asof"),
-                    "pool_version": pool.get("pool_version") or "liq_pool_v1",
-                    "levels": pool.get("levels") or [],
-                    "stats": pool.get("stats") or {},
-                    "tol_price": pool.get("tol_price"),
-                    "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                }
-
-    
-                zone_map = build_symbol_zone_map(
-                    symbol=sym_upper,
-                    spot_tf_rows=spot_rows,
-                    candle_engine=self.engine,
-                )
-    
-                await upsert_symbol_zone_map(
-                    zone_map=zone_map,
-                    table="zone_finder",
-                )
-    
-                print(f"[ZONE_FINDER] Updated zone_finder row for {sym_upper}")
-    
+                _enrich_vp_for_tf(current_tf=tf, current_snapshot=pack["snapshot"], snapshots_by_tf=snap_map)
             except Exception as e:
-                print(f"[ZONE_FINDER] Failed for {sym_upper}: {e}")
+                print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
+
+        # Update caches
+        for tf, pack in pending.items():
+            snapshot = pack["snapshot"]
+            last_candle = pack["last_candle"]
+            ts_dt = pack["ts_dt"]
+
+            trend = snapshot["trend"]
+            pivots = snapshot["pivots"]
+            swings = snapshot["swings"]
+            structural = snapshot["structural"]
+            fvgs = snapshot["fvgs"]
+            liquidity = snapshot["liquidity"]
+            volume_profile = snapshot["volume_profile"]
+            extras = snapshot["extras"]
+            structure_state = snapshot["structure_state"]
+            extras_advanced = pack["extras_advanced"]
+
+            cluster = last_candle.get("cluster") or {}
+
+            strategies = evaluate_strategies(
+                symbol=sym_upper,
+                timeframe=tf,
+                candles=pack["closed_candles"],
+                swings=swings,
+                fvgs=fvgs,
+                liquidity=liquidity,
+                trend=trend,
+                cluster=cluster,
+                volume_profile=volume_profile,
+                htf_swings=None,
+            )
+
+            # ---------------- EVENTS (cache-only) ----------------
+            prev_state = self.last_events_state.get(sym_upper, {}).get(tf) or {}
+            prev_latest = prev_state.get("events_latest")
+            prev_active = prev_state.get("events_active")
+            prev_recent = prev_state.get("events_recent")
+
+            fvgs_prev = self.last_fvgs_cache.get(sym_upper, {}).get(tf)
+            liq_row = self.liq_pool_cache.get(sym_upper)
+
+            swing_items = (swings or {}).get("swings") or []
+            swing_highs = [
+                {"ts": s.get("ts"), "price": s.get("price")}
+                for s in swing_items
+                if s.get("type") == "swing_high" and s.get("state") == "active"
+            ]
+            swing_lows = [
+                {"ts": s.get("ts"), "price": s.get("price")}
+                for s in swing_items
+                if s.get("type") == "swing_low" and s.get("state") == "active"
+            ]
+
+            structural_points = (structural or {}).get("points") or []
+            structural_highs = [
+                {"ts": p.get("ts"), "price": p.get("price")}
+                for p in structural_points
+                if p.get("type") == "swing_high" and p.get("label") in ("HH", "LH")
+            ]
+            structural_lows = [
+                {"ts": p.get("ts"), "price": p.get("price")}
+                for p in structural_points
+                if p.get("type") == "swing_low" and p.get("label") in ("LL", "HL")
+            ]
+
+            ev_ctx = SpotEventContext(
+                symbol=sym_upper,
+                timeframe=tf,
+                last_candle=last_candle,
+                liquidity_pool_row=liq_row,
+                structural_highs=structural_highs,
+                structural_lows=structural_lows,
+                swing_highs=swing_highs,
+                swing_lows=swing_lows,
+                structure_state=structure_state or "",
+                fvgs_now=fvgs,
+                fvgs_prev=fvgs_prev,
+                prev_events_latest=prev_latest,
+                prev_events_active=prev_active,
+                prev_events_recent=prev_recent,
+            )
+            ev_out = compute_spot_events(ev_ctx)
+
+            self.last_events_state.setdefault(sym_upper, {})[tf] = {
+                "events_latest": ev_out.get("events_latest"),
+                "events_active": ev_out.get("events_active"),
+                "events_recent": ev_out.get("events_recent"),
+            }
+            self.last_fvgs_cache.setdefault(sym_upper, {})[tf] = list(fvgs or [])
+
+            self.last_snapshots.setdefault(sym_upper, {})[tf] = snapshot
+            self.last_processed_ts.setdefault(sym_upper, {})[tf] = ts_dt
+
+            self.spot_tf_cache[(sym_upper, tf)] = {
+                "symbol": sym_upper,
+                "timeframe": tf,
+                "asof": ts_dt.isoformat(),
+                "snapshot": snapshot,
+                "extras_advanced": extras_advanced,
+                "strategies": strategies,
+                "events": self.last_events_state[sym_upper][tf],
+            }
+
+            print(
+                f"[INDICATORS][SIM] Updated {sym_upper} {tf} "
+                f"(ts={ts_dt.isoformat()}, trend={trend.get('state')})"
+            )
