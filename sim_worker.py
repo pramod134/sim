@@ -1,207 +1,228 @@
-"""
-One-time Simulation Worker (Railway-friendly)
-
-Behavior:
-1) Connect to Postgres via DATABASE_URL (asyncpg pool)
-2) Claim ONE sim job from public.sim_ticker where start_sim='y'
-3) Build CandleEngine + IndicatorBot
-4) Load seed candles (as-of seed_date 16:00 ET), bootstrap IndicatorBot
-5) Run simulation for sim_period trading days (RTH only), step-by-step (no sleeps)
-6) Mark sim_ticker as done/error and exit
-
-Notes:
-- No DB writes for indicators/events/trades during simulation (cache-only).
-- sim_ticker is the only table we update (status tracking).
-"""
-
 import os
 import asyncio
 import datetime as dt
-from typing import Optional, Dict, Any
+import uuid
+from typing import Any, Dict, Optional
 
-import asyncpg
+import httpx
 
 from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
 
 
-CLAIM_ONE_JOB_SQL = """
-WITH picked AS (
-  SELECT symbol
-  FROM public.sim_ticker
-  WHERE start_sim = 'y'
-    AND status IN ('idle','done','error')
-  ORDER BY symbol
-  LIMIT 1
-  FOR UPDATE SKIP LOCKED
-)
-UPDATE public.sim_ticker t
-SET
-  start_sim     = 'n',
-  status        = 'running',
-  run_id        = gen_random_uuid(),
-  started_at    = now(),
-  finished_at   = NULL,
-  error_message = NULL
-FROM picked
-WHERE t.symbol = picked.symbol
-RETURNING
-  t.symbol,
-  t.seed_date,
-  t.sim_period,
-  t.run_id,
-  t.status,
-  t.started_at;
-"""
+# ----------------------------- Supabase REST -----------------------------
 
-MARK_DONE_SQL = """
-UPDATE public.sim_ticker
-SET
-  status = 'done',
-  finished_at = now()
-WHERE symbol = $1
-  AND run_id = $2;
-"""
-
-MARK_ERROR_SQL = """
-UPDATE public.sim_ticker
-SET
-  status = 'error',
-  finished_at = now(),
-  error_message = $3
-WHERE symbol = $1
-  AND run_id = $2;
-"""
+def _sb_env() -> tuple[str, str]:
+    url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_KEY")
+        or ""
+    )
+    if not url or not key:
+        raise RuntimeError(
+            "Missing SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)."
+        )
+    return url, key
 
 
-def _parse_iso_dt(s: str) -> dt.datetime:
-    # Expect ISO string with timezone (UTC).
-    # Example: "2026-02-24T20:59:00+00:00"
-    return dt.datetime.fromisoformat(s)
+def _sb_headers(key: str) -> Dict[str, str]:
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
 
 
-async def _claim_one_job(pool: asyncpg.Pool) -> Optional[asyncpg.Record]:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(CLAIM_ONE_JOB_SQL)
-            return row
+async def _sb_select_one(
+    client: httpx.AsyncClient,
+    base_url: str,
+    key: str,
+    table: str,
+    params: Dict[str, str],
+) -> Optional[Dict[str, Any]]:
+    endpoint = f"{base_url}/rest/v1/{table}"
+    hdrs = _sb_headers(key)
+    # Prefer PostgREST "single object" semantics
+    hdrs["Accept"] = "application/vnd.pgrst.object+json"
+    r = await client.get(endpoint, headers=hdrs, params=params, timeout=30.0)
+    if r.status_code == 406:
+        # No rows matched (PostgREST returns 406 for object+json when empty)
+        return None
+    r.raise_for_status()
+    return r.json()
 
 
-async def _mark_done(pool: asyncpg.Pool, symbol: str, run_id: str) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute(MARK_DONE_SQL, symbol, run_id)
+async def _sb_patch(
+    client: httpx.AsyncClient,
+    base_url: str,
+    key: str,
+    table: str,
+    params: Dict[str, str],
+    payload: Dict[str, Any],
+    *,
+    returning: str = "representation",
+) -> Any:
+    endpoint = f"{base_url}/rest/v1/{table}"
+    hdrs = _sb_headers(key)
+    hdrs["Prefer"] = f"return={returning}"
+    r = await client.patch(endpoint, headers=hdrs, params=params, json=payload, timeout=30.0)
+    r.raise_for_status()
+    # representation returns json array (or object), minimal returns empty
+    return r.json() if r.text else None
 
 
-async def _mark_error(pool: asyncpg.Pool, symbol: str, run_id: str, message: str) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute(MARK_ERROR_SQL, symbol, run_id, message[:2000])
+async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
+    """
+    Claim exactly one sim_ticker row where start_sim='y'.
 
+    We do this in 2 steps (read -> patch) because we’re on REST.
+    It’s not perfectly atomic like SQL, but it’s good enough for a single-run worker.
+    """
+    base_url, key = _sb_env()
 
-async def run_one_job(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
-    symbol: str = (job["symbol"] or "").upper()
-    seed_date: dt.date = job["seed_date"]
-    sim_period: int = int(job["sim_period"])
-    run_id: str = str(job["run_id"])
+    # 1) Find one candidate job
+    job = await _sb_select_one(
+        client,
+        base_url,
+        key,
+        "sim_ticker",
+        params={
+            "select": "*",
+            "start_sim": "eq.y",
+            "order": "updated_at.asc.nullslast",
+            "limit": "1",
+        },
+    )
+    if not job:
+        return None
 
-    print(
-        f"[SIM_WORKER] Claimed job: symbol={symbol}, seed_date={seed_date}, sim_period={sim_period}, run_id={run_id}"
+    symbol = (job.get("symbol") or "").upper()
+    run_id = str(uuid.uuid4())
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    # 2) Patch it to running + flip start_sim to 'n'
+    updated = await _sb_patch(
+        client,
+        base_url,
+        key,
+        "sim_ticker",
+        params={"symbol": f"eq.{symbol}"},
+        payload={
+            "start_sim": "n",
+            "status": "running",
+            "run_id": run_id,
+            "started_at": now,
+            "finished_at": None,
+            "error_message": None,
+            "updated_at": now,
+        },
+        returning="representation",
     )
 
-    # Build engine + bot (cache-only simulation)
-    engine = CandleEngine(db_pool=pool, symbols=[symbol])
-    bot = IndicatorBot(engine=engine, timeframes=None, enable_zone_finder=False, enable_liquidity_pool=False)
+    # PostgREST returns a list for PATCH with representation
+    if isinstance(updated, list) and updated:
+        return updated[0]
+    if isinstance(updated, dict):
+        return updated
+    return job
 
-    # Seed
-    seed_payload: Dict[str, Any] = await engine.load_seed(symbol, seed_date)
-    await bot.bootstrap(seed_payload)
 
-    # Simulation loop: run for sim_period *trading days*.
-    # CandleEngine.step() will load next RTH day buffer automatically from DB.
-    days_completed = 0
-    current_day: Optional[dt.date] = None
+async def _mark_done(client: httpx.AsyncClient, symbol: str) -> None:
+    base_url, key = _sb_env()
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    await _sb_patch(
+        client,
+        base_url,
+        key,
+        "sim_ticker",
+        params={"symbol": f"eq.{symbol}"},
+        payload={"status": "done", "finished_at": now, "updated_at": now},
+        returning="minimal",
+    )
 
-    # The engine maintains per-symbol day buffer and current day (ET).
-    # We count a "sim day" once we begin processing candles for a new ET date.
-    while True:
-        try:
-            # Stop exactly after finishing the last minute of the last requested day:
-            # If we've completed sim_period days AND the current day's buffer is consumed, stop BEFORE loading next day.
-            if current_day is not None and days_completed >= sim_period:
-                buf = engine._day_buffer_1m.get(symbol, [])
-                idx = engine._day_buffer_idx.get(symbol, 0)
-                if idx >= len(buf):
-                    print(f"[SIM_WORKER] Completed {days_completed} trading days for {symbol}. Stopping.")
-                    break
 
-            events = await engine.step(symbol)
+async def _mark_error(client: httpx.AsyncClient, symbol: str, msg: str) -> None:
+    base_url, key = _sb_env()
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    await _sb_patch(
+        client,
+        base_url,
+        key,
+        "sim_ticker",
+        params={"symbol": f"eq.{symbol}"},
+        payload={"status": "error", "error_message": msg[:2000], "finished_at": now, "updated_at": now},
+        returning="minimal",
+    )
 
-            # Determine current ET day from engine state (set when day buffer is loaded)
-            day_et = engine._current_day_et.get(symbol)
 
-            if day_et is not None and day_et != current_day:
-                current_day = day_et
-                days_completed += 1
-                print(f"[SIM_WORKER] Day {days_completed}/{sim_period} started: {symbol} {current_day} (ET)")
-
-            # Only process events if we are within sim_period days
-            # (This prevents processing first candle of day sim_period+1 if edge occurs)
-            if days_completed <= sim_period:
-                await bot.process(events)
-
-        except StopAsyncIteration:
-            print(f"[SIM_WORKER] No more candles available for {symbol}. Stopping early.")
-            break
-        except Exception as e:
-            # Bubble up for outer handler to mark error
-            raise RuntimeError(f"Simulation failed for {symbol}: {e}") from e
-
-    # Print a tiny summary from caches
-    try:
-        # Last known 1m snapshot
-        k = (symbol, "1m")
-        if k in bot.spot_tf_cache:
-            last_asof = bot.spot_tf_cache[k].get("asof")
-            print(f"[SIM_WORKER] Finished {symbol}. Last 1m asof={last_asof}")
-    except Exception:
-        pass
-
-    # Mark done
-    await _mark_done(pool, symbol, run_id)
-    print(f"[SIM_WORKER] Marked DONE: {symbol} run_id={run_id}")
-
+# ----------------------------- Worker Main -----------------------------
 
 async def main() -> int:
-    db_url = os.getenv("DATABASE_URL", "").strip()
-    if not db_url:
-        print("[SIM_WORKER] ERROR: DATABASE_URL is not set.")
-        return 2
+    # quick env validation early
+    _sb_env()
 
-    # Small pool is enough for a one-time worker
-    pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
-
-    try:
-        job = await _claim_one_job(pool)
+    async with httpx.AsyncClient() as client:
+        job = await _claim_one_job(client)
         if not job:
             print("[SIM_WORKER] No sim_ticker rows with start_sim='y'. Exiting.")
             return 0
 
-        symbol = (job["symbol"] or "").upper()
-        run_id = str(job["run_id"])
+        symbol = (job.get("symbol") or "").upper()
+        seed_date = job.get("seed_date")  # expected 'YYYY-MM-DD' in ET
+        sim_period = int(job.get("sim_period") or 0)  # days
 
-        try:
-            await run_one_job(pool, job)
-            return 0
-        except Exception as e:
-            msg = str(e)
-            print(f"[SIM_WORKER] ERROR during run: {msg}")
-            try:
-                await _mark_error(pool, symbol, run_id, msg)
-            except Exception as e2:
-                print(f"[SIM_WORKER] Failed to mark error in sim_ticker: {e2}")
+        if not symbol or not seed_date or sim_period <= 0:
+            msg = f"Invalid job fields: symbol={symbol!r} seed_date={seed_date!r} sim_period={sim_period!r}"
+            print(f"[SIM_WORKER] {msg}")
+            await _mark_error(client, symbol or "UNKNOWN", msg)
             return 1
 
-    finally:
-        await pool.close()
+        print(f"[SIM_WORKER] Claimed job: symbol={symbol} seed_date={seed_date} sim_period={sim_period}")
+
+        try:
+            # Candle engine reads candles from DB via Supabase REST (we’ll patch candle_engine next)
+            engine = CandleEngine(symbols=[symbol])
+
+            # Indicator bot in simulation mode (no DB writes)
+            bot = IndicatorBot(sim_mode=True)
+
+            # Seed counts per your spec
+            seed_counts = {
+                "1m": 5000,
+                "3m": 2500,
+                "5m": 1500,
+                "15m": 600,
+                "1h": 400,
+                "1d": 200,
+                "1w": 50,
+            }
+
+            seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
+            await bot.bootstrap(symbol=symbol, seed=seed)
+
+            # Run sim day-by-day starting next trading day 09:30 ET
+            sim_days = await engine.get_sim_days(symbol=symbol, start_after_seed_date_et=seed_date, num_days=sim_period)
+            print(f"[SIM_WORKER] Sim days: {sim_days[:3]}{'...' if len(sim_days) > 3 else ''}")
+
+            for d in sim_days:
+                async for event in engine.stream_day(symbol=symbol, date_et=d):
+                    # event = {"tf": "1m"/"3m"/..., "candle": {...}}
+                    await bot.on_candle(symbol=symbol, timeframe=event["tf"], candle=event["candle"])
+
+            await _mark_done(client, symbol)
+            print(f"[SIM_WORKER] DONE: {symbol}")
+            return 0
+
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            print(f"[SIM_WORKER] ERROR: {msg}")
+            try:
+                await _mark_error(client, symbol, msg)
+            except Exception as e2:
+                print(f"[SIM_WORKER] Failed to mark error in DB: {e2}")
+            return 1
 
 
 if __name__ == "__main__":
