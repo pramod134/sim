@@ -1,5 +1,8 @@
 import datetime as dt
+import os
 from typing import Dict, List, Any, Optional
+
+import httpx
 
 try:
     import asyncpg  # type: ignore
@@ -7,6 +10,12 @@ except Exception:  # pragma: no cover
     asyncpg = None  # type: ignore
 
 from zoneinfo import ZoneInfo
+
+# Optional external provider module (not required in simulation-only usage).
+try:
+    import market_data  # type: ignore
+except Exception:  # pragma: no cover
+    market_data = None  # type: ignore
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -35,6 +44,9 @@ CANDLE_TABLES = {
     "1w": "candle_history_1w",
 }
 
+# Alias used by simulation helpers that read from Supabase REST tables.
+TF_TABLE = CANDLE_TABLES
+
 RTH_SESSION = "rth"
 
 # ---- Candle classification config -----------------------------------------
@@ -52,6 +64,45 @@ WICK_DOMINANT = 2.0      # wick >= 2x body
 
 VOL_HIGH = 2.0           # 2x avg volume
 VOL_LOW = 0.5            # 0.5x avg volume
+
+
+# ---- Supabase REST helpers -------------------------------------------------
+
+def _sb_env() -> tuple[str, str]:
+    url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_KEY")
+        or ""
+    )
+    if not url or not key:
+        raise RuntimeError(
+            "Missing SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY)."
+        )
+    return url, key
+
+
+def _sb_headers(key: str) -> Dict[str, str]:
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+async def _sb_get_rows(
+    client: httpx.AsyncClient,
+    table: str,
+    params: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    base_url, key = _sb_env()
+    endpoint = f"{base_url}/rest/v1/{table}"
+    r = await client.get(endpoint, headers=_sb_headers(key), params=params, timeout=30.0)
+    r.raise_for_status()
+    data = r.json()
+    return data if isinstance(data, list) else ([data] if data else [])
 
 
 # ---- RTH Helpers -----------------------------------------------------------
@@ -219,7 +270,12 @@ class CandleEngine:
     Simulation-only (no live loops, no external providers, no DB writes).
     """
 
-    def __init__(self, db_pool: Any, symbols: List[str]):
+    def __init__(
+        self,
+        db_pool: Any,
+        symbols: List[str],
+        twelve_data_api_key: Optional[str] = None,
+    ):
         """
         Simulation CandleEngine (DB-backed, deterministic stepper).
 
@@ -228,6 +284,8 @@ class CandleEngine:
         - No external market data providers. No live loops. No DB writes.
         """
         self.pool = db_pool
+        # Kept for compatibility with older call sites.
+        self.td_api_key = twelve_data_api_key or ""
         self.symbols = sorted({s.upper() for s in symbols if s.strip()})
 
         # candles[symbol][tf] -> list of enriched candle dicts
@@ -243,6 +301,201 @@ class CandleEngine:
         self._current_day_et: Dict[str, Optional[dt.date]] = {s: None for s in self.symbols}
 
         # ---- Micro-cluster (last few candles behavior) ------------------------
+
+    # ----------------------------- Simulation REST API -----------------------
+
+    async def load_seed_from_db(
+        self,
+        symbol: str,
+        seed_date_et: str,
+        counts: Dict[str, int],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Load seed candles ending at the given seed_date (ET).
+        For each timeframe, fetch N candles from its candle_history table up to
+        seed_date 16:00 ET (RTH close).
+
+        Returns: {"1m": [...], "3m": [...], ...} (each list sorted ASC by ts).
+        """
+        sym = symbol.upper()
+        y, m, d = [int(x) for x in seed_date_et.split("-")]
+        cutoff_et = dt.datetime(y, m, d, 16, 0, 0, tzinfo=EASTERN)
+        cutoff_utc = cutoff_et.astimezone(dt.timezone.utc).isoformat()
+
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        async with httpx.AsyncClient() as client:
+            for tf, n in counts.items():
+                table = TF_TABLE.get(tf)
+                if not table or n <= 0:
+                    continue
+
+                params = {
+                    "select": "*",
+                    "symbol": f"eq.{sym}",
+                    "ts": f"lte.{cutoff_utc}",
+                    "order": "ts.desc",
+                    "limit": str(int(n)),
+                    "session": "eq.rth",
+                }
+                rows = await _sb_get_rows(client, table, params)
+
+                # Fallback when table schema has no session column.
+                if rows and "session" not in rows[0]:
+                    params.pop("session", None)
+                    rows = await _sb_get_rows(client, table, params)
+
+                cleaned: List[Dict[str, Any]] = []
+                for r in rows:
+                    try:
+                        ts = dt.datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))
+                    except Exception:
+                        cleaned.append(r)
+                        continue
+                    if is_rth_timestamp(ts):
+                        cleaned.append(r)
+
+                out[tf] = list(reversed(cleaned))
+
+        return out
+
+    async def get_sim_days(
+        self,
+        symbol: str,
+        start_after_seed_date_et: str,
+        num_days: int,
+    ) -> List[str]:
+        """
+        Determine the next `num_days` trading dates (ET) after the seed date
+        based on available 1m candles in DB.
+        """
+        sym = symbol.upper()
+        y, m, d = [int(x) for x in start_after_seed_date_et.split("-")]
+        start_et = dt.datetime(y, m, d, 16, 0, 0, tzinfo=EASTERN)
+        start_utc = start_et.astimezone(dt.timezone.utc).isoformat()
+
+        params = {
+            "select": "ts,session",
+            "symbol": f"eq.{sym}",
+            "ts": f"gt.{start_utc}",
+            "order": "ts.asc",
+            "limit": "50000",
+        }
+        async with httpx.AsyncClient() as client:
+            rows = await _sb_get_rows(client, TF_TABLE["1m"], params)
+
+        days: List[str] = []
+        for r in rows:
+            if r.get("session") and r["session"] != "rth":
+                continue
+            try:
+                ts = dt.datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if not is_rth_timestamp(ts):
+                continue
+            date_et = ts.astimezone(EASTERN).date().isoformat()
+            if date_et <= start_after_seed_date_et:
+                continue
+            if not days or days[-1] != date_et:
+                days.append(date_et)
+                if len(days) >= num_days:
+                    break
+
+        return days
+
+    async def stream_day(self, symbol: str, date_et: str):
+        """
+        Async generator yielding candle events for one ET trading date.
+        Emits raw 1m candles and in-memory aggregates for 3m/5m/15m/1h.
+        """
+        sym = symbol.upper()
+        y, m, d = [int(x) for x in date_et.split("-")]
+        start_et = dt.datetime(y, m, d, 9, 30, 0, tzinfo=EASTERN)
+        end_et = dt.datetime(y, m, d, 16, 0, 0, tzinfo=EASTERN)
+        start_utc = start_et.astimezone(dt.timezone.utc)
+        end_utc = end_et.astimezone(dt.timezone.utc)
+
+        params = {
+            "select": "*",
+            "symbol": f"eq.{sym}",
+            "ts": f"gte.{start_utc.isoformat()}",
+            "order": "ts.asc",
+            "limit": "20000",
+            "session": "eq.rth",
+        }
+        async with httpx.AsyncClient() as client:
+            rows = await _sb_get_rows(client, TF_TABLE["1m"], params)
+            if rows and "session" not in rows[0]:
+                params.pop("session", None)
+                rows = await _sb_get_rows(client, TF_TABLE["1m"], params)
+
+        candles_1m: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                ts = dt.datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if ts < start_utc:
+                continue
+            if ts >= end_utc:
+                break
+            if is_rth_timestamp(ts):
+                candles_1m.append(r)
+
+        tfs = ["3m", "5m", "15m", "1h"]
+        cur_bucket: Dict[str, Optional[dt.datetime]] = {tf: None for tf in tfs}
+        agg: Dict[str, Optional[Dict[str, Any]]] = {tf: None for tf in tfs}
+
+        def _start_agg(c: Dict[str, Any], bucket_ts: dt.datetime) -> Dict[str, Any]:
+            return {
+                "symbol": sym,
+                "ts": bucket_ts.isoformat(),
+                "session": "rth",
+                "open": float(c["open"]),
+                "high": float(c["high"]),
+                "low": float(c["low"]),
+                "close": float(c["close"]),
+                "volume": float(c.get("volume") or 0),
+                "vwap": c.get("vwap"),
+                "trade_count": c.get("trade_count"),
+            }
+
+        def _update_agg(a: Dict[str, Any], c: Dict[str, Any]) -> None:
+            a["high"] = max(float(a["high"]), float(c["high"]))
+            a["low"] = min(float(a["low"]), float(c["low"]))
+            a["close"] = float(c["close"])
+            a["volume"] = float(a.get("volume") or 0) + float(c.get("volume") or 0)
+            if c.get("vwap") is not None:
+                a["vwap"] = c.get("vwap")
+            if c.get("trade_count") is not None:
+                try:
+                    a["trade_count"] = (a.get("trade_count") or 0) + int(c.get("trade_count") or 0)
+                except Exception:
+                    pass
+
+        for c in candles_1m:
+            yield {"tf": "1m", "candle": c}
+
+            ts = dt.datetime.fromisoformat(str(c["ts"]).replace("Z", "+00:00"))
+            for tf in tfs:
+                b = bucket_start(ts, tf)
+                if cur_bucket[tf] is None:
+                    cur_bucket[tf] = b
+                    agg[tf] = _start_agg(c, b)
+                    continue
+
+                if b != cur_bucket[tf]:
+                    prev = agg[tf]
+                    if prev is not None:
+                        yield {"tf": tf, "candle": prev}
+                    cur_bucket[tf] = b
+                    agg[tf] = _start_agg(c, b)
+                elif agg[tf] is not None:
+                    _update_agg(agg[tf], c)
+
+        for tf in tfs:
+            if agg[tf] is not None:
+                yield {"tf": tf, "candle": agg[tf]}
 
     def _compute_cluster(
         self,
@@ -1029,4 +1282,3 @@ class CandleEngine:
         if symbol not in self.candles:
             return []
         return self.candles[symbol].get(timeframe, [])
-
