@@ -272,7 +272,6 @@ class CandleEngine:
 
     def __init__(
         self,
-        db_pool: Any,
         symbols: List[str],
         twelve_data_api_key: Optional[str] = None,
     ):
@@ -283,8 +282,7 @@ class CandleEngine:
         - Playback streams 1m RTH candles from DB and aggregates 3m/5m/15m/1h on the fly.
         - No external market data providers. No live loops. No DB writes.
         """
-        self.pool = db_pool
-        # Kept for compatibility with older call sites.
+        # Simulation version does NOT use db_pool.
         self.td_api_key = twelve_data_api_key or ""
         self.symbols = sorted({s.upper() for s in symbols if s.strip()})
 
