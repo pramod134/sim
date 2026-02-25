@@ -1,4 +1,5 @@
 import math
+import asyncio
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -342,11 +343,13 @@ class IndicatorBot:
         timeframes: Optional[List[str]] = None,
         enable_zone_finder: bool = False,
         enable_liquidity_pool: bool = False,
+        sim_mode: bool = False,
     ):
         self.engine = engine
         self.timeframes = timeframes or list(SUPPORTED_TFS)
         self.enable_zone_finder = enable_zone_finder
         self.enable_liquidity_pool = enable_liquidity_pool
+        self.sim_mode = bool(sim_mode)
         # last_processed_ts[symbol][tf] -> datetime of last processed candle
         self.last_processed_ts: Dict[str, Dict[str, dt.datetime]] = {}
         # last_snapshots[symbol][tf] -> most recent snapshot dict (for multi-TF VP context)
@@ -367,17 +370,54 @@ class IndicatorBot:
         # trades_cache[run_id] optional, runner can also own this
         self.trades_cache: Dict[str, List[Dict[str, Any]]] = {}
 
+        # Push-mode simulation helpers
+        self._last_asof: Dict[Tuple[str, str], str] = {}
+        self._sim_candles: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+
+    async def run(self) -> None:
+        """
+        Live runner loop. Simulation workers should use bootstrap/on_candle.
+        """
+        while True:
+            await self.poll_once()
+            await asyncio.sleep(getattr(self, "poll_seconds", 1))
+
+    async def poll_once(self) -> None:
+        """
+        Live polling entrypoint: step engine then process emitted events.
+        """
+        events = await self.engine.step()
+        if events:
+            await self.process(events)
+
     # ------------------------------------------------------------------ #
     # Simulation API (Runner-driven)
     # ------------------------------------------------------------------ #
 
-    async def bootstrap(self, seed_data: Dict[str, Any]) -> None:
+    async def bootstrap(
+        self,
+        symbol_or_seed: Any,
+        seed: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> None:
         """
         One-time initialization from seed candles.
 
         seed_data shape:
           { "symbol": str, "as_of": str, "candles": { tf: [enriched_candles...] } }
+
+        Supports both signatures:
+          - bootstrap(seed_data)
+          - bootstrap(symbol, seed)
         """
+        if isinstance(symbol_or_seed, dict) and seed is None:
+            seed_data = symbol_or_seed
+        else:
+            symbol = str(symbol_or_seed or "").upper()
+            seed_data = {"symbol": symbol, "candles": seed or {}}
+
+        await self._bootstrap_from_seed_data(seed_data)
+
+    async def _bootstrap_from_seed_data(self, seed_data: Dict[str, Any]) -> None:
         symbol = (seed_data.get("symbol") or "").upper()
         candles_by_tf: Dict[str, List[Dict[str, Any]]] = seed_data.get("candles") or {}
         if not symbol or not candles_by_tf:
@@ -397,6 +437,7 @@ class IndicatorBot:
 
             # In simulation, seed candles are assumed closed and ordered
             closed_candles = candles
+            self._sim_candles[(symbol, tf)] = list(closed_candles)
 
             # Session candles (advanced extras)
             last_candle = closed_candles[-1]
@@ -435,6 +476,98 @@ class IndicatorBot:
                 _enrich_vp_for_tf(current_tf=tf, current_snapshot=snapshot, snapshots_by_tf=snap_map)
             except Exception as e:
                 print(f"[VP][ENRICH] bootstrap failed for {symbol} {tf}: {e}")
+
+    async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
+        """
+        Push one candle into the bot (simulation mode).
+        """
+        sym = (symbol or "").upper()
+        tf = timeframe
+        if not sym or not tf:
+            return
+
+        asof = candle.get("ts") or candle.get("asof")
+        key = (sym, tf)
+        if asof and self._last_asof.get(key) == str(asof):
+            return
+        if asof:
+            self._last_asof[key] = str(asof)
+
+        candles = self._sim_candles.setdefault(key, [])
+        candles.append(candle)
+
+        # Keep bounded history to avoid unbounded growth.
+        if len(candles) > 3000:
+            del candles[:-3000]
+
+        if len(candles) < 10:
+            self.spot_tf_cache[key] = {
+                "symbol": sym,
+                "timeframe": tf,
+                "asof": str(asof) if asof else None,
+                "candle": candle,
+            }
+            return
+
+        closed_candles = candles
+        last_candle = closed_candles[-1]
+        session_date = last_candle.get("date_et")
+        if session_date:
+            session_candles = [c for c in closed_candles if c.get("date_et") == session_date]
+        else:
+            session_candles = closed_candles
+
+        snapshot = compute_all_indicators(closed_candles)
+        advanced = compute_advanced_extras(
+            candles=closed_candles,
+            base_snapshot=snapshot,
+            htf_snapshot=None,
+            session_candles=session_candles,
+        )
+
+        self.last_snapshots.setdefault(sym, {})[tf] = snapshot
+        ts_dt = _ensure_dt(last_candle.get("ts") or asof)
+        self.last_processed_ts.setdefault(sym, {})[tf] = ts_dt
+
+        strategies = evaluate_strategies(
+            symbol=sym,
+            timeframe=tf,
+            candles=closed_candles,
+            swings=snapshot.get("swings") or {},
+            fvgs=snapshot.get("fvgs") or [],
+            liquidity=snapshot.get("liquidity") or {},
+            trend=snapshot.get("trend") or {},
+            cluster=last_candle.get("cluster") or {},
+            volume_profile=snapshot.get("volume_profile") or {},
+            htf_swings=None,
+        )
+
+        row = {
+            "symbol": sym,
+            "timeframe": tf,
+            "asof": ts_dt.isoformat(),
+            "snapshot": snapshot,
+            "extras_advanced": advanced,
+            "strategies": strategies,
+        }
+        self.spot_tf_cache[key] = row
+
+        if not self.sim_mode:
+            await update_indicators_in_spot_tf(
+                symbol=sym,
+                timeframe=tf,
+                trend=snapshot.get("trend") or {},
+                pivots=snapshot.get("pivots") or {},
+                swings=snapshot.get("swings") or {},
+                structural=snapshot.get("structural") or {},
+                fvgs=snapshot.get("fvgs") or [],
+                liquidity=snapshot.get("liquidity") or {},
+                volume_profile=snapshot.get("volume_profile") or {},
+                extras=snapshot.get("extras") or {},
+                extras_advanced=advanced,
+                structure_state=snapshot.get("structure_state"),
+                strategies=strategies,
+            )
 
     # ------------------------------------------------------------------ #
     # Core update logic
