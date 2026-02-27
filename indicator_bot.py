@@ -2,6 +2,7 @@ import math
 import asyncio
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 
 from candle_engine import CandleEngine, SUPPORTED_TFS
@@ -20,7 +21,7 @@ from spot_event import SpotEventContext, compute_spot_events
 
 
 
-EASTERN = dt.timezone(dt.timedelta(hours=-5))  # not critical, mainly for consistency
+EASTERN = ZoneInfo("America/New_York")
 
 
 # ---------------------------------------------------------------------------
