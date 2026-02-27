@@ -251,6 +251,12 @@ async def main() -> int:
             for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
                 print(f"[SIM][LIVE] {symbol} {tf}: first_live_ts={first_live_ts.get(tf)} last_live_ts={last_live_ts.get(tf)}")
 
+            # Print final event summary (totals + per timeframe + per day)
+            try:
+                bot.print_event_summary()
+            except Exception as e:
+                print(f"[SIM_WORKER] Failed to print event summary: {e}")
+
             await _mark_done(client, symbol)
             print(f"[SIM_WORKER] DONE: {symbol}")
             return 0
