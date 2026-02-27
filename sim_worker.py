@@ -75,7 +75,7 @@ async def _sb_patch(
 
 async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
     """
-    Claim exactly one sim_ticker row where start_sim='y'.
+    Claim exactly one spot_ticker row where start_sim='y'.
 
     We do this in 2 steps (read -> patch) because we’re on REST.
     It’s not perfectly atomic like SQL, but it’s good enough for a single-run worker.
@@ -87,7 +87,7 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         client,
         base_url,
         key,
-        "sim_ticker",
+        "spot_ticker",
         params={
             "select": "*",
             "start_sim": "eq.y",
@@ -106,7 +106,7 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         client,
         base_url,
         key,
-        "sim_ticker",
+        "spot_ticker",
         params={"symbol": f"eq.{symbol}"},
         payload={
             "start_sim": "n",
@@ -134,7 +134,7 @@ async def _mark_done(client: httpx.AsyncClient, symbol: str) -> None:
         client,
         base_url,
         key,
-        "sim_ticker",
+        "spot_ticker",
         params={"symbol": f"eq.{symbol}"},
         payload={"status": "done", "finished_at": now},
         returning="minimal",
@@ -148,7 +148,7 @@ async def _mark_error(client: httpx.AsyncClient, symbol: str, msg: str) -> None:
         client,
         base_url,
         key,
-        "sim_ticker",
+        "spot_ticker",
         params={"symbol": f"eq.{symbol}"},
         payload={"status": "error", "error_message": msg[:2000], "finished_at": now},
         returning="minimal",
@@ -164,7 +164,7 @@ async def main() -> int:
     async with httpx.AsyncClient() as client:
         job = await _claim_one_job(client)
         if not job:
-            print("[SIM_WORKER] No sim_ticker rows with start_sim='y'. Exiting.")
+            print("[SIM_WORKER] No spot_ticker rows with start_sim='y'. Exiting.")
             return 0
 
         symbol = (job.get("symbol") or "").upper()
@@ -184,7 +184,7 @@ async def main() -> int:
             engine = CandleEngine(symbols=[symbol])
 
             # Indicator bot in simulation mode (no DB writes)
-            bot = IndicatorBot(sim_mode=True)
+            bot = IndicatorBot(engine=engine, sim_mode=True)
 
             # Seed counts per your spec
             seed_counts = {
