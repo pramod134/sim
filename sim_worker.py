@@ -200,14 +200,56 @@ async def main() -> int:
             seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
             await bot.bootstrap(symbol, seed)
 
+            # ---------------- SEED LOGS ----------------
+            def _ts_str(x: Any) -> str:
+                try:
+                    if isinstance(x, dt.datetime):
+                        t = x
+                    else:
+                        t = dt.datetime.fromisoformat(str(x))
+                    if t.tzinfo is None:
+                        t = t.replace(tzinfo=dt.timezone.utc)
+                    return t.astimezone(dt.timezone.utc).isoformat()
+                except Exception:
+                    return str(x)
+
+            print("[SIM][SEED] Seed candle stats (UTC):")
+            for tf in sorted(seed_counts.keys(), key=lambda s: (len(s), s)):
+                arr = (seed or {}).get(tf) or []
+                n = len(arr)
+                if n == 0:
+                    print(f"[SIM][SEED] {symbol} {tf}: n=0")
+                    continue
+                first_ts = _ts_str(arr[0].get("ts"))
+                last_ts = _ts_str(arr[-1].get("ts"))
+                print(f"[SIM][SEED] {symbol} {tf}: n={n} first_ts={first_ts} last_ts={last_ts}")
+
             # Run sim day-by-day starting next trading day 09:30 ET
             sim_days = await engine.get_sim_days(symbol=symbol, start_after_seed_date_et=seed_date, num_days=sim_period)
             print(f"[SIM_WORKER] Sim days: {sim_days[:3]}{'...' if len(sim_days) > 3 else ''}")
 
+            # ---------------- LIVE SIM LOGS ----------------
+            first_live_ts: Dict[str, str] = {}
+            last_live_ts: Dict[str, str] = {}
+
             for d in sim_days:
                 async for event in engine.stream_day(symbol=symbol, date_et=d):
                     # event = {"tf": "1m"/"3m"/..., "candle": {...}}
+                    try:
+                        tf = str(event.get("tf") or "")
+                        c = event.get("candle") or {}
+                        ts = _ts_str(c.get("ts"))
+                        if tf and tf not in first_live_ts:
+                            first_live_ts[tf] = ts
+                        if tf:
+                            last_live_ts[tf] = ts
+                    except Exception:
+                        pass
                     await bot.on_candle(symbol=symbol, timeframe=event["tf"], candle=event["candle"])
+
+            print("[SIM][LIVE] Live sim candle range (UTC):")
+            for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
+                print(f"[SIM][LIVE] {symbol} {tf}: first_live_ts={first_live_ts.get(tf)} last_live_ts={last_live_ts.get(tf)}")
 
             await _mark_done(client, symbol)
             print(f"[SIM_WORKER] DONE: {symbol}")
