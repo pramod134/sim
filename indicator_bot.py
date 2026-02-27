@@ -378,6 +378,7 @@ class IndicatorBot:
 
         # Logging guards
         self._logged_indicators_once: Dict[Tuple[str, str], bool] = {}
+        self._logged_liqpool_once: Dict[Tuple[str, str], bool] = {}
 
         # ---------------- Event counters (final summary only) ----------------
         # Count only on transitions (None -> non-None).
@@ -706,6 +707,16 @@ class IndicatorBot:
         fvgs_now = snapshot.get("fvgs") or []
         fvgs_prev = self.last_fvgs_cache.get(sym, {}).get(tf)
         liq_row = self.liq_pool_cache.get(sym)
+
+        # ---------------- LIQUIDITY POOL DEBUG (ONCE) ----------------
+        key_lp = (sym, tf)
+        if liq_row and not self._logged_liqpool_once.get(key_lp):
+            try:
+                preview = self._json(liq_row)[:200]
+                print(f"[LIQ_POOL][ONCE] {sym} {tf} {ts_dt.isoformat()} -> {preview}")
+            except Exception:
+                print(f"[LIQ_POOL][ONCE] {sym} {tf} -> <unserializable>")
+            self._logged_liqpool_once[key_lp] = True
 
         swing_items = (snapshot.get("swings") or {}).get("swings") or []
         swing_highs = [{"ts": s.get("ts"), "price": s.get("price")} for s in swing_items if s.get("type") == "swing_high" and s.get("state") == "active"]
