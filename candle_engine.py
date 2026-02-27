@@ -417,13 +417,17 @@ class CandleEngine:
         out: Dict[str, List[Dict[str, Any]]] = {}
         for tf, table in self._candle_tables.items():
             lim = int(counts.get(tf, 5000))
-            rows = await self._sb_fetch_candles(
+            # IMPORTANT:
+            # We want the seed to END at the cutoff (seed_date 16:00 ET) and go BACK in time.
+            # So we fetch DESC (most recent first) with a LIMIT, then reverse to ASC in memory.
+            rows_desc = await self._sb_fetch_candles(
                 table=table,
                 symbol=sym,
                 ts_lte=cutoff_utc,
                 limit=lim,
-                order_asc=True,
+                order_asc=False,
             )
+            rows = list(reversed(rows_desc))
             out[tf] = [self._enrich_row(r) for r in rows]
 
         self.candles.setdefault(sym, {})
