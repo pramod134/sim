@@ -379,6 +379,10 @@ class IndicatorBot:
         # Logging guards
         self._logged_indicators_once: Dict[Tuple[str, str], bool] = {}
 
+        # Event counters
+        self._event_count_latest: Dict[str, int] = {}
+        self._event_count_active: Dict[str, int] = {}
+
     def _json(self, obj: Any) -> str:
         try:
             return json.dumps(obj, default=str, ensure_ascii=False)
