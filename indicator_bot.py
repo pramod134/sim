@@ -378,14 +378,23 @@ class IndicatorBot:
 
         # Logging guards
         self._logged_indicators_once: Dict[Tuple[str, str], bool] = {}
-        self._event_count_latest: Dict[str, int] = {}
-        self._event_count_active: Dict[str, int] = {}
 
-        # Event counters
-        self._event_count_latest: Dict[str, int] = {}
-        self._event_count_active: Dict[str, int] = {}
+        # ---------------- Event counters (final summary only) ----------------
+        # Count only on transitions (None -> non-None).
         self._prev_latest_state: Dict[str, bool] = {}
         self._prev_active_state: Dict[str, bool] = {}
+
+        # totals
+        self._event_total_latest: Dict[str, int] = {}
+        self._event_total_active: Dict[str, int] = {}
+
+        # by timeframe
+        self._event_by_tf_latest: Dict[str, Dict[str, int]] = {}
+        self._event_by_tf_active: Dict[str, Dict[str, int]] = {}
+
+        # by day (ET date)
+        self._event_by_day_latest: Dict[str, Dict[str, int]] = {}
+        self._event_by_day_active: Dict[str, Dict[str, int]] = {}
 
     def _json(self, obj: Any) -> str:
         try:
@@ -421,39 +430,100 @@ class IndicatorBot:
         s = self._json(payload)
         print(f"[INDICATORS][ONCE] {symbol} {tf} {asof.isoformat()} -> {s[:100]}")
 
-    def _log_events_all(
-        self,
-        symbol: str,
-        tf: str,
-        asof: dt.datetime,
-        ev_out: Dict[str, Any],
-        prev_recent: Any,
-    ) -> None:
+    def _inc_event(self, bucket: Dict[str, int], name: str) -> None:
+        bucket[name] = bucket.get(name, 0) + 1
+
+    def _inc_event_tf(self, bucket: Dict[str, Dict[str, int]], tf: str, name: str) -> None:
+        d = bucket.setdefault(tf, {})
+        d[name] = d.get(name, 0) + 1
+
+    def _inc_event_day(self, bucket: Dict[str, Dict[str, int]], day_et: str, name: str) -> None:
+        d = bucket.setdefault(day_et, {})
+        d[name] = d.get(name, 0) + 1
+
+    def _track_event_counts(self, symbol: str, tf: str, asof_utc: dt.datetime, ev_out: Dict[str, Any]) -> None:
         """
-        Count events by transitions only:
-          - events_latest: count when a key transitions None -> non-None
-          - events_active: count when a key transitions None -> non-None
-        Ignore events_recent entirely.
-        Log only first 20 characters of event name.
+        Track counts (no printing):
+          - totals
+          - by timeframe
+          - by day (ET)
+        Count only transitions: None -> non-None for each key.
         """
         latest = (ev_out or {}).get("events_latest") or {}
         active = (ev_out or {}).get("events_active") or {}
 
-        for name, value in latest.items():
-            current_state = value is not None
-            previous_state = self._prev_latest_state.get(name, False)
-            if current_state and not previous_state:
-                self._event_count_latest[name] = self._event_count_latest.get(name, 0) + 1
-                print(f"[EVENT COUNT][LATEST] {name[:20]} = {self._event_count_latest[name]}")
-            self._prev_latest_state[name] = current_state
+        # derive ET day
+        try:
+            asof_et = asof_utc.astimezone(ZoneInfo("America/New_York"))
+            day_et = asof_et.date().isoformat()
+        except Exception:
+            day_et = str(asof_utc.date())
 
+        # latest transitions
+        for name, value in latest.items():
+            cur = value is not None
+            prev = self._prev_latest_state.get(name, False)
+            if cur and not prev:
+                self._inc_event(self._event_total_latest, name)
+                self._inc_event_tf(self._event_by_tf_latest, tf, name)
+                self._inc_event_day(self._event_by_day_latest, day_et, name)
+            self._prev_latest_state[name] = cur
+
+        # active transitions
         for name, value in active.items():
-            current_state = value is not None
-            previous_state = self._prev_active_state.get(name, False)
-            if current_state and not previous_state:
-                self._event_count_active[name] = self._event_count_active.get(name, 0) + 1
-                print(f"[EVENT COUNT][ACTIVE] {name[:20]} = {self._event_count_active[name]}")
-            self._prev_active_state[name] = current_state
+            cur = value is not None
+            prev = self._prev_active_state.get(name, False)
+            if cur and not prev:
+                self._inc_event(self._event_total_active, name)
+                self._inc_event_tf(self._event_by_tf_active, tf, name)
+                self._inc_event_day(self._event_by_day_active, day_et, name)
+            self._prev_active_state[name] = cur
+
+    def print_event_summary(self) -> None:
+        """
+        Print final event counts:
+          - totals (latest + active)
+          - by timeframe
+          - by day (ET)
+        """
+        def _sorted_items(d: Dict[str, int]) -> List[Tuple[str, int]]:
+            return sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
+
+        print("\n===== EVENT SUMMARY (FINAL) =====")
+
+        print("\n--- TOTAL: events_latest (transition counts) ---")
+        for name, cnt in _sorted_items(self._event_total_latest):
+            print(f"{name}: {cnt}")
+
+        print("\n--- TOTAL: events_active (transition counts) ---")
+        for name, cnt in _sorted_items(self._event_total_active):
+            print(f"{name}: {cnt}")
+
+        print("\n--- BY TIMEFRAME: events_latest ---")
+        for tf in sorted(self._event_by_tf_latest.keys(), key=lambda s: (len(s), s)):
+            print(f"\n[{tf}]")
+            for name, cnt in _sorted_items(self._event_by_tf_latest[tf]):
+                print(f"{name}: {cnt}")
+
+        print("\n--- BY TIMEFRAME: events_active ---")
+        for tf in sorted(self._event_by_tf_active.keys(), key=lambda s: (len(s), s)):
+            print(f"\n[{tf}]")
+            for name, cnt in _sorted_items(self._event_by_tf_active[tf]):
+                print(f"{name}: {cnt}")
+
+        print("\n--- BY DAY (ET): events_latest ---")
+        for day in sorted(self._event_by_day_latest.keys()):
+            print(f"\n[{day}]")
+            for name, cnt in _sorted_items(self._event_by_day_latest[day]):
+                print(f"{name}: {cnt}")
+
+        print("\n--- BY DAY (ET): events_active ---")
+        for day in sorted(self._event_by_day_active.keys()):
+            print(f"\n[{day}]")
+            for name, cnt in _sorted_items(self._event_by_day_active[day]):
+                print(f"{name}: {cnt}")
+
+        print("\n===== END EVENT SUMMARY =====\n")
 
     async def run(self) -> None:
         """
@@ -683,7 +753,8 @@ class IndicatorBot:
 
         # ---------------- LOGGING RULES ----------------
         self._log_indicators_once(sym, tf, ts_dt, snapshot, advanced, strategies)
-        self._log_events_all(sym, tf, ts_dt, ev_out, prev_recent)
+        # Track counts only; do NOT print events live
+        self._track_event_counts(sym, tf, ts_dt, ev_out)
 
         if not self.sim_mode:
             await update_indicators_in_spot_tf(
