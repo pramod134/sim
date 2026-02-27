@@ -384,6 +384,8 @@ class IndicatorBot:
         # Event counters
         self._event_count_latest: Dict[str, int] = {}
         self._event_count_active: Dict[str, int] = {}
+        self._prev_latest_state: Dict[str, bool] = {}
+        self._prev_active_state: Dict[str, bool] = {}
 
     def _json(self, obj: Any) -> str:
         try:
@@ -428,7 +430,9 @@ class IndicatorBot:
         prev_recent: Any,
     ) -> None:
         """
-        Track and log counts for non-null events_latest and events_active.
+        Count events by transitions only:
+          - events_latest: count when a key transitions None -> non-None
+          - events_active: count when a key transitions None -> non-None
         Ignore events_recent entirely.
         Log only first 20 characters of event name.
         """
@@ -436,16 +440,20 @@ class IndicatorBot:
         active = (ev_out or {}).get("events_active") or {}
 
         for name, value in latest.items():
-            if value is not None:
+            current_state = value is not None
+            previous_state = self._prev_latest_state.get(name, False)
+            if current_state and not previous_state:
                 self._event_count_latest[name] = self._event_count_latest.get(name, 0) + 1
-                short_name = name[:20]
-                print(f"[EVENT COUNT][LATEST] {short_name} = {self._event_count_latest[name]}")
+                print(f"[EVENT COUNT][LATEST] {name[:20]} = {self._event_count_latest[name]}")
+            self._prev_latest_state[name] = current_state
 
         for name, value in active.items():
-            if value is not None:
+            current_state = value is not None
+            previous_state = self._prev_active_state.get(name, False)
+            if current_state and not previous_state:
                 self._event_count_active[name] = self._event_count_active.get(name, 0) + 1
-                short_name = name[:20]
-                print(f"[EVENT COUNT][ACTIVE] {short_name} = {self._event_count_active[name]}")
+                print(f"[EVENT COUNT][ACTIVE] {name[:20]} = {self._event_count_active[name]}")
+            self._prev_active_state[name] = current_state
 
     async def run(self) -> None:
         """
