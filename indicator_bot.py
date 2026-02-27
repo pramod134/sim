@@ -378,6 +378,8 @@ class IndicatorBot:
 
         # Logging guards
         self._logged_indicators_once: Dict[Tuple[str, str], bool] = {}
+        self._event_count_latest: Dict[str, int] = {}
+        self._event_count_active: Dict[str, int] = {}
 
     def _json(self, obj: Any) -> str:
         try:
@@ -422,31 +424,24 @@ class IndicatorBot:
         prev_recent: Any,
     ) -> None:
         """
-        Log ALL events:
-          - any non-null key in events_latest (each candle)
-          - each newly appended record in events_recent
-          - any non-null key in events_active (each candle)
+        Track and log counts for non-null events_latest and events_active.
+        Ignore events_recent entirely.
+        Log only first 20 characters of event name.
         """
         latest = (ev_out or {}).get("events_latest") or {}
         active = (ev_out or {}).get("events_active") or {}
-        recent = (ev_out or {}).get("events_recent") or []
 
-        nn_latest = {k: v for k, v in latest.items() if v is not None}
-        if nn_latest:
-            print(f"[EVENTS][LATEST] {symbol} {tf} {asof.isoformat()} {self._json(nn_latest)}")
+        for name, value in latest.items():
+            if value is not None:
+                self._event_count_latest[name] = self._event_count_latest.get(name, 0) + 1
+                short_name = name[:20]
+                print(f"[EVENT COUNT][LATEST] {short_name} = {self._event_count_latest[name]}")
 
-        nn_active = {k: v for k, v in active.items() if v is not None}
-        if nn_active:
-            print(f"[EVENTS][ACTIVE] {symbol} {tf} {asof.isoformat()} {self._json(nn_active)}")
-
-        try:
-            prev_len = len(prev_recent) if isinstance(prev_recent, list) else 0
-            if isinstance(recent, list) and len(recent) > prev_len:
-                for item in recent[prev_len:]:
-                    print(f"[EVENTS][RECENT] {symbol} {tf} {asof.isoformat()} {self._json(item)}")
-        except Exception:
-            if recent:
-                print(f"[EVENTS][RECENT] {symbol} {tf} {asof.isoformat()} {self._json(recent)}")
+        for name, value in active.items():
+            if value is not None:
+                self._event_count_active[name] = self._event_count_active.get(name, 0) + 1
+                short_name = name[:20]
+                print(f"[EVENT COUNT][ACTIVE] {short_name} = {self._event_count_active[name]}")
 
     async def run(self) -> None:
         """
