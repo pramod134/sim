@@ -198,7 +198,7 @@ async def main() -> int:
             }
 
             seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
-            await bot.bootstrap(seed=seed)
+            await bot.bootstrap(symbol, seed)
 
             # Run sim day-by-day starting next trading day 09:30 ET
             sim_days = await engine.get_sim_days(symbol=symbol, start_after_seed_date_et=seed_date, num_days=sim_period)
