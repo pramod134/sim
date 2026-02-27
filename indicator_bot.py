@@ -1,6 +1,7 @@
 import math
 import asyncio
 import datetime as dt
+import json
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -375,6 +376,78 @@ class IndicatorBot:
         self._last_asof: Dict[Tuple[str, str], str] = {}
         self._sim_candles: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 
+        # Logging guards
+        self._logged_indicators_once: Dict[Tuple[str, str], bool] = {}
+
+    def _json(self, obj: Any) -> str:
+        try:
+            return json.dumps(obj, default=str, ensure_ascii=False)
+        except Exception:
+            return str(obj)
+
+    def _log_indicators_once(
+        self,
+        symbol: str,
+        tf: str,
+        asof: dt.datetime,
+        snapshot: Dict[str, Any],
+        advanced: Any,
+        strategies: Any,
+    ) -> None:
+        """
+        Log indicators only ONE time per (symbol, tf), and only first 100 chars.
+        """
+        key = (symbol, tf)
+        if self._logged_indicators_once.get(key):
+            return
+        self._logged_indicators_once[key] = True
+
+        # Keep it small: avoid dumping pivots/swings/structural arrays
+        payload = {
+            "trend": (snapshot or {}).get("trend"),
+            "structure_state": (snapshot or {}).get("structure_state"),
+            "fvgs_count": len((snapshot or {}).get("fvgs") or []),
+            "swings_count": len(((snapshot or {}).get("swings") or {}).get("swings") or []),
+            "strategies": strategies,
+        }
+        s = self._json(payload)
+        print(f"[INDICATORS][ONCE] {symbol} {tf} {asof.isoformat()} -> {s[:100]}")
+
+    def _log_events_all(
+        self,
+        symbol: str,
+        tf: str,
+        asof: dt.datetime,
+        ev_out: Dict[str, Any],
+        prev_recent: Any,
+    ) -> None:
+        """
+        Log ALL events:
+          - any non-null key in events_latest (each candle)
+          - each newly appended record in events_recent
+          - any non-null key in events_active (each candle)
+        """
+        latest = (ev_out or {}).get("events_latest") or {}
+        active = (ev_out or {}).get("events_active") or {}
+        recent = (ev_out or {}).get("events_recent") or []
+
+        nn_latest = {k: v for k, v in latest.items() if v is not None}
+        if nn_latest:
+            print(f"[EVENTS][LATEST] {symbol} {tf} {asof.isoformat()} {self._json(nn_latest)}")
+
+        nn_active = {k: v for k, v in active.items() if v is not None}
+        if nn_active:
+            print(f"[EVENTS][ACTIVE] {symbol} {tf} {asof.isoformat()} {self._json(nn_active)}")
+
+        try:
+            prev_len = len(prev_recent) if isinstance(prev_recent, list) else 0
+            if isinstance(recent, list) and len(recent) > prev_len:
+                for item in recent[prev_len:]:
+                    print(f"[EVENTS][RECENT] {symbol} {tf} {asof.isoformat()} {self._json(item)}")
+        except Exception:
+            if recent:
+                print(f"[EVENTS][RECENT] {symbol} {tf} {asof.isoformat()} {self._json(recent)}")
+
     async def run(self) -> None:
         """
         Live runner loop. Simulation workers should use bootstrap/on_candle.
@@ -543,6 +616,53 @@ class IndicatorBot:
             htf_swings=None,
         )
 
+        # ---------------- EVENTS (ensure sim path scans + logs events) ----------------
+        self.last_events_state.setdefault(sym, {})
+        self.last_fvgs_cache.setdefault(sym, {})
+        self.liq_pool_cache.setdefault(sym, None)
+
+        prev_state = self.last_events_state.get(sym, {}).get(tf) or {}
+        prev_latest = prev_state.get("events_latest")
+        prev_active = prev_state.get("events_active")
+        prev_recent = prev_state.get("events_recent")
+
+        fvgs_now = snapshot.get("fvgs") or []
+        fvgs_prev = self.last_fvgs_cache.get(sym, {}).get(tf)
+        liq_row = self.liq_pool_cache.get(sym)
+
+        swing_items = (snapshot.get("swings") or {}).get("swings") or []
+        swing_highs = [{"ts": s.get("ts"), "price": s.get("price")} for s in swing_items if s.get("type") == "swing_high" and s.get("state") == "active"]
+        swing_lows = [{"ts": s.get("ts"), "price": s.get("price")} for s in swing_items if s.get("type") == "swing_low" and s.get("state") == "active"]
+
+        structural_points = (snapshot.get("structural") or {}).get("points") or []
+        structural_highs = [{"ts": p.get("ts"), "price": p.get("price")} for p in structural_points if p.get("type") == "swing_high" and p.get("label") in ("HH", "LH")]
+        structural_lows = [{"ts": p.get("ts"), "price": p.get("price")} for p in structural_points if p.get("type") == "swing_low" and p.get("label") in ("LL", "HL")]
+
+        ev_ctx = SpotEventContext(
+            symbol=sym,
+            timeframe=tf,
+            last_candle=last_candle,
+            liquidity_pool_row=liq_row,
+            structural_highs=structural_highs,
+            structural_lows=structural_lows,
+            swing_highs=swing_highs,
+            swing_lows=swing_lows,
+            structure_state=(snapshot.get("structure_state") or ""),
+            fvgs_now=fvgs_now,
+            fvgs_prev=fvgs_prev,
+            prev_events_latest=prev_latest,
+            prev_events_active=prev_active,
+            prev_events_recent=prev_recent,
+        )
+        ev_out = compute_spot_events(ev_ctx)
+
+        self.last_events_state.setdefault(sym, {})[tf] = {
+            "events_latest": ev_out.get("events_latest"),
+            "events_active": ev_out.get("events_active"),
+            "events_recent": ev_out.get("events_recent"),
+        }
+        self.last_fvgs_cache.setdefault(sym, {})[tf] = list(fvgs_now)
+
         row = {
             "symbol": sym,
             "timeframe": tf,
@@ -550,8 +670,13 @@ class IndicatorBot:
             "snapshot": snapshot,
             "extras_advanced": advanced,
             "strategies": strategies,
+            "events": self.last_events_state[sym][tf],
         }
         self.spot_tf_cache[key] = row
+
+        # ---------------- LOGGING RULES ----------------
+        self._log_indicators_once(sym, tf, ts_dt, snapshot, advanced, strategies)
+        self._log_events_all(sym, tf, ts_dt, ev_out, prev_recent)
 
         if not self.sim_mode:
             await update_indicators_in_spot_tf(
