@@ -72,6 +72,11 @@ def _event_id(event_type: str, ts: str, timeframe: str, extra: str = "") -> str:
 
 
 DEBUG = os.getenv("SPOT_EVENT_DEBUG", "0").strip().lower() in ("1", "true", "yes", "y", "on")
+SPOT_EVENT_FIRST_N = int(os.getenv("SPOT_EVENT_FIRST_N", "3") or "3")
+SPOT_EVENT_FVG_SAMPLE = int(os.getenv("SPOT_EVENT_FVG_SAMPLE", "3") or "3")
+
+# Track how many debug blocks we've printed per (symbol, timeframe)
+_dbg_seen_counts: Dict[Tuple[str, str], int] = {}
 
 
 def _now_utc_iso() -> str:
@@ -964,6 +969,20 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         # "received time" is wall-clock at evaluation; candle ts is close timestamp.
         print(f"[SPOT_EVT][RECV] sym={symbol} tf={timeframe} recv_utc={_now_utc_iso()} candle_ts={ts}")
 
+    # Debug gating (first N candles per symbol+tf only)
+    dbg_key = (symbol, timeframe)
+    dbg_seen = _dbg_seen_counts.get(dbg_key, 0)
+    dbg_on = bool(DEBUG and ts and (dbg_seen < SPOT_EVENT_FIRST_N))
+    if dbg_on:
+        _dbg_seen_counts[dbg_key] = dbg_seen + 1
+
+    # Capture what fires on THIS candle (pure logging)
+    dbg_disp_et: Optional[str] = None
+    dbg_bos_et: Optional[str] = None
+    dbg_choch_et: Optional[str] = None
+    dbg_sweep_et: Optional[str] = None
+    dbg_fvg_events: List[Dict[str, Any]] = []
+
     # Initialize from prev or defaults
     events_latest = copy.deepcopy(ctx.prev_events_latest) if ctx.prev_events_latest else init_events_latest()
     events_active = copy.deepcopy(ctx.prev_events_active) if ctx.prev_events_active else init_events_active()
@@ -984,6 +1003,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         events_latest[et] = ev
         _append_recent_unique(events_recent, ev)
         displacement_fired = True
+        dbg_disp_et = et
 
     # -------------------------
     # 2) Liquidity Sweep
@@ -996,6 +1016,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         ev = _make_event(et, ts, timeframe, score, meta, extra_id=level_id)
         events_latest[et] = ev
         _append_recent_unique(events_recent, ev)
+        dbg_sweep_et = et
 
     # -------------------------
     # 3) BOS trigger
@@ -1015,6 +1036,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         ev = _make_event(et, ts, timeframe, score, meta)
         events_latest[et] = ev
         _append_recent_unique(events_recent, ev)
+        dbg_bos_et = et
 
         # Start / refresh BOS tracker
         if et == "structure_break_up":
@@ -1080,6 +1102,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         ev = _make_event(et, ts, timeframe, score, meta)
         events_latest[et] = ev
         _append_recent_unique(events_recent, ev)
+        dbg_choch_et = et
 
         # Start / refresh CHOCH tracker
         if et == "choch_up":
@@ -1149,10 +1172,53 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     # -------------------------
     if ts and ctx.fvgs_now is not None:
         fvg_events = detect_fvg_transitions(ctx.fvgs_now, ctx.fvgs_prev, ts, timeframe)
-        for ev in fvg_events:
+        dbg_fvg_events = fvg_events or []
+        for ev in (fvg_events or []):
             et = ev["type"]
             events_latest[et] = ev
             _append_recent_unique(events_recent, ev)
+
+    # ---- Full debug block: first N candles only (pure logging) ----
+    if dbg_on:
+        mom_atr = last_candle.get("mom_atr")
+        vol_rel = last_candle.get("vol_rel")
+        spread_strength = last_candle.get("spread_strength")
+        cluster_state = ((last_candle.get("cluster") or {}).get("state") or "")
+
+        sh = len(ctx.structural_highs or [])
+        sl = len(ctx.structural_lows or [])
+        swh = len(ctx.swing_highs or [])
+        swl = len(ctx.swing_lows or [])
+        st = ctx.structure_state
+
+        print(f"[SPOT_EVT][DBG#{dbg_seen+1}] sym={symbol} tf={timeframe} candle_ts={ts}")
+        print(
+            f"[SPOT_EVT][DBG#{dbg_seen+1}][CANDLE] dir={last_candle.get('direction')} "
+            f"close={last_candle.get('close')} mom_atr={mom_atr} vol_rel={vol_rel} "
+            f"spread_strength={spread_strength} cluster_state={cluster_state}"
+        )
+        print(
+            f"[SPOT_EVT][DBG#{dbg_seen+1}][STRUCT_IN] structural_highs={sh} structural_lows={sl} "
+            f"swing_highs={swh} swing_lows={swl} structure_state={st}"
+        )
+        print(
+            f"[SPOT_EVT][DBG#{dbg_seen+1}][FIRED] "
+            f"displacement={dbg_disp_et or '-'} sweep={dbg_sweep_et or '-'} "
+            f"bos={dbg_bos_et or '-'} choch={dbg_choch_et or '-'} "
+            f"fvg_events={len(dbg_fvg_events)} fvgs_now={len(ctx.fvgs_now or [])} "
+            f"fvgs_prev={-1 if ctx.fvgs_prev is None else len(ctx.fvgs_prev or [])}"
+        )
+
+        # Sample a few FVG events emitted on this candle
+        n_sample = max(0, SPOT_EVENT_FVG_SAMPLE)
+        for i, ev in enumerate((dbg_fvg_events or [])[:n_sample]):
+            meta = ev.get("meta") or {}
+            print(
+                f"[SPOT_EVT][DBG#{dbg_seen+1}][FVG_EVT] {i+1}/{min(len(dbg_fvg_events), n_sample)} "
+                f"type={ev.get('type')} ev.ts={ev.get('ts')} created_ts={meta.get('created_ts')} "
+                f"first_touch_ts={meta.get('first_touch_ts')} filled_ts={meta.get('filled_ts')} "
+                f"sig={(meta.get('fvg_sig') or '')[:24]}"
+            )
 
     after_snapshot = (json.dumps(events_latest, sort_keys=True, default=str),
                       json.dumps(events_active, sort_keys=True, default=str),
