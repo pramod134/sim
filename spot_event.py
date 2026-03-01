@@ -971,6 +971,9 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
 
     # Debug gating (first N candles per symbol+tf only)
     dbg_key = (symbol, timeframe)
+    if DEBUG and ts:
+        print(f"[SPOT_EVT][CALL] {symbol} {timeframe} @ {ts}")
+
     dbg_seen = _dbg_seen_counts.get(dbg_key, 0)
     dbg_on = bool(DEBUG and ts and (dbg_seen < SPOT_EVENT_FIRST_N))
     if dbg_on:
@@ -996,6 +999,9 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     # 1) Displacement
     # -------------------------
     disp = detect_displacement(last_candle)
+    if DEBUG and ts:
+        print(f"[SPOT_EVT][CALL] detect_displacement() called for {symbol} {timeframe} @ {ts}")
+
     displacement_fired = False
     if disp and ts:
         et, score, meta = disp
@@ -1026,6 +1032,9 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     bos = None
     if ts:
         bos = detect_bos(last_candle, structural_highs, structural_lows, displacement_fired)
+    if DEBUG and ts:
+        print(f"[SPOT_EVT][CALL] detect_bos() called for {symbol} {timeframe} @ {ts}")
+
     if bos and ts:
         et, score, meta = bos
         if DEBUG:
@@ -1092,6 +1101,9 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     choch = None
     if ts:
         choch = detect_choch(last_candle, swing_highs, swing_lows, ctx.structure_state)
+    if DEBUG and ts:
+        print(f"[SPOT_EVT][CALL] detect_choch() called for {symbol} {timeframe} @ {ts}")
+
     if choch and ts:
         et, score, meta = choch
         if DEBUG:
