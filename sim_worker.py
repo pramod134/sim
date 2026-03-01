@@ -232,6 +232,12 @@ async def main() -> int:
             first_live_ts: Dict[str, str] = {}
             last_live_ts: Dict[str, str] = {}
 
+            # ---- Diagnostics: what was sent to IndicatorBot -----------------
+            bot_on_candle_total = 0
+            bot_on_candle_by_tf: Dict[str, int] = {}
+            first_live_to_bot: Optional[Dict[str, Any]] = None
+            last_live_to_bot: Optional[Dict[str, Any]] = None
+
             for d in sim_days:
                 # IMPORTANT: stream_day() now behaves like live:
                 # - reads ONLY 1m from DB
@@ -240,21 +246,62 @@ async def main() -> int:
                 # - emits closed candles for those HTFs
                 async for event in engine.stream_day(symbol=symbol, date_et=d):
                     # event = {"tf": "1m"/"3m"/..., "candle": enriched {...}}
+                    tf = event["tf"]
+                    candle = event["candle"]
                     try:
-                        tf = str(event.get("tf") or "")
-                        c = event.get("candle") or {}
-                        ts = _ts_str(c.get("ts"))
-                        if tf and tf not in first_live_ts:
-                            first_live_ts[tf] = ts
-                        if tf:
-                            last_live_ts[tf] = ts
+                        tf_s = str(tf or "")
+                        ts = _ts_str(candle.get("ts"))
+                        if tf_s and tf_s not in first_live_ts:
+                            first_live_ts[tf_s] = ts
+                        if tf_s:
+                            last_live_ts[tf_s] = ts
                     except Exception:
                         pass
-                    await bot.on_candle(symbol=symbol, timeframe=event["tf"], candle=event["candle"])
+
+                    # Track exactly what we forward to IndicatorBot
+                    bot_on_candle_total += 1
+                    bot_on_candle_by_tf[tf] = int(bot_on_candle_by_tf.get(tf, 0)) + 1
+
+                    if first_live_to_bot is None:
+                        first_live_to_bot = {
+                            "tf": tf,
+                            "ts": candle.get("ts"),
+                            "open": candle.get("open"),
+                            "high": candle.get("high"),
+                            "low": candle.get("low"),
+                            "close": candle.get("close"),
+                            "volume": candle.get("volume"),
+                        }
+
+                    last_live_to_bot = {
+                        "tf": tf,
+                        "ts": candle.get("ts"),
+                        "open": candle.get("open"),
+                        "high": candle.get("high"),
+                        "low": candle.get("low"),
+                        "close": candle.get("close"),
+                        "volume": candle.get("volume"),
+                    }
+
+                    await bot.on_candle(symbol=symbol, timeframe=tf, candle=candle)
 
             print("[SIM][LIVE] Live sim candle range (UTC):")
             for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
                 print(f"[SIM][LIVE] {symbol} {tf}: first_live_ts={first_live_ts.get(tf)} last_live_ts={last_live_ts.get(tf)}")
+
+            print(f"[SIM][LIVE] First live candle sent to bot: {first_live_to_bot}")
+            print(f"[SIM][LIVE] Last live candle sent to bot:  {last_live_to_bot}")
+            print(f"[SIM][LIVE] IndicatorBot triggers: bootstrap=1 on_candle_total={bot_on_candle_total} on_candle_by_tf={bot_on_candle_by_tf}")
+
+            # Compare with CandleEngine emitted stats
+            try:
+                emit_counts = engine.get_live_emit_counts(symbol)
+                first_last = engine.get_live_first_last(symbol)
+                print(f"[SIM][ENGINE] Live emitted counts by tf: {emit_counts}")
+                print(f"[SIM][ENGINE] First emitted: {first_last.get('first')}")
+                print(f"[SIM][ENGINE] Last emitted:  {first_last.get('last')}")
+            except Exception as e:
+                print(f"[SIM][ENGINE] Diagnostics read failed: {e}")
 
             # Print final event summary (totals + per timeframe + per day)
             try:

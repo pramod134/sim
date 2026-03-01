@@ -331,6 +331,15 @@ class CandleEngine:
         self._day_buffer_idx: Dict[str, int] = {}
         self._current_day_et: Dict[str, Optional[dt.date]] = {s: None for s in self.symbols}
 
+        # ---- Diagnostics ----------------------------------------------------
+        # Seed stats per symbol/timeframe
+        self.seed_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        # Live emitted counts per symbol/timeframe
+        self.live_emit_counts: Dict[str, Dict[str, int]] = {}
+        # First/last emitted candle (overall)
+        self.live_first_emitted: Dict[str, Dict[str, Any]] = {}
+        self.live_last_emitted: Dict[str, Dict[str, Any]] = {}
+
         # ---- Micro-cluster (last few candles behavior) ------------------------
 
     # ----------------------------- Simulation REST API -----------------------
@@ -479,7 +488,32 @@ class CandleEngine:
                 else None
             )
 
+        # ---- Diagnostics: Seed phase stats ---------------------------------
+        seed_tf_stats: Dict[str, Dict[str, Any]] = {}
+        for tf in self._candle_tables.keys():
+            arr = out.get(tf) or []
+            n = len(arr)
+            first_ts = arr[0].get("ts") if n else None
+            last_ts = arr[-1].get("ts") if n else None
+            seed_tf_stats[tf] = {"n": n, "first_ts": first_ts, "last_ts": last_ts}
+        self.seed_stats[sym] = seed_tf_stats
+        print(f"[CANDLE_ENGINE][SEED] {sym} seed_stats={seed_tf_stats}")
+
         return out
+
+    # ---- Diagnostics getters -----------------------------------------------
+    def get_seed_stats(self, symbol: str) -> Dict[str, Dict[str, Any]]:
+        return self.seed_stats.get(symbol.upper(), {})
+
+    def get_live_emit_counts(self, symbol: str) -> Dict[str, int]:
+        return self.live_emit_counts.get(symbol.upper(), {})
+
+    def get_live_first_last(self, symbol: str) -> Dict[str, Dict[str, Any]]:
+        sym = symbol.upper()
+        return {
+            "first": self.live_first_emitted.get(sym, {}),
+            "last": self.live_last_emitted.get(sym, {}),
+        }
 
     async def get_sim_days(self, *, symbol: str, start_after_seed_date_et: str, num_days: int) -> List[str]:
         """Return next N weekday dates after seed_date (ET)."""
@@ -552,6 +586,16 @@ class CandleEngine:
             limit=25000,
             order_asc=True,
         )
+
+        # Ensure diagnostics container exists
+        self.live_emit_counts.setdefault(sym, {})
+
+        def _diag_record_emit(tf: str, c: Dict[str, Any]) -> None:
+            self.live_emit_counts[sym][tf] = int(self.live_emit_counts[sym].get(tf, 0)) + 1
+            if sym not in self.live_first_emitted:
+                self.live_first_emitted[sym] = {"tf": tf, "ts": c.get("ts"), "candle": c}
+            self.live_last_emitted[sym] = {"tf": tf, "ts": c.get("ts"), "candle": c}
+
         for r in rows_1m:
             raw_1m = _norm_db_row(r)
             e_1m = self._enrich_candle(sym, "1m", raw_1m)
@@ -559,12 +603,14 @@ class CandleEngine:
             self.latest_ts[sym]["1m"] = dt.datetime.fromisoformat(e_1m["ts"])
 
             # Emit 1m first (same as live)
+            _diag_record_emit("1m", e_1m)
             yield {"tf": "1m", "candle": e_1m}
 
             # Aggregate + emit HTFs that close on this 1m step
             for tf in ("3m", "5m", "15m", "1h"):
                 new_htf = self._aggregate_from_1m(sym, tf, [e_1m])
                 for c in new_htf:
+                    _diag_record_emit(tf, c)
                     yield {"tf": tf, "candle": c}
 
     def _compute_cluster(
