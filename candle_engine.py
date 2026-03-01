@@ -414,6 +414,40 @@ class CandleEngine:
         cutoff_et = dt.datetime(seed_day.year, seed_day.month, seed_day.day, 16, 0, tzinfo=EASTERN)
         cutoff_utc = cutoff_et.astimezone(dt.timezone.utc).isoformat()
 
+        # Ensure containers exist
+        self.candles.setdefault(sym, {})
+        self.latest_ts.setdefault(sym, {})
+
+        def _norm_db_row(r: Dict[str, Any]) -> Dict[str, Any]:
+            """
+            Normalize a DB row into a raw candle dict consumable by _enrich_candle().
+            Preserve optional fields if present (vwap, trade_count, etc).
+            """
+            out_r = dict(r)
+            ts_utc = CandleEngine._parse_ts_utc(out_r.get("ts"))
+            out_r["ts"] = ts_utc.isoformat()
+
+            # Normalize numeric types
+            if out_r.get("open") is not None:
+                out_r["open"] = float(out_r["open"])
+            if out_r.get("high") is not None:
+                out_r["high"] = float(out_r["high"])
+            if out_r.get("low") is not None:
+                out_r["low"] = float(out_r["low"])
+            if out_r.get("close") is not None:
+                out_r["close"] = float(out_r["close"])
+            if "volume" in out_r:
+                out_r["volume"] = float(out_r.get("volume") or 0.0)
+            if out_r.get("vwap") is not None:
+                out_r["vwap"] = float(out_r["vwap"])
+            if out_r.get("trade_count") is not None:
+                try:
+                    out_r["trade_count"] = int(out_r["trade_count"])
+                except Exception:
+                    pass
+            out_r["symbol"] = sym
+            return out_r
+
         out: Dict[str, List[Dict[str, Any]]] = {}
         for tf, table in self._candle_tables.items():
             lim = int(counts.get(tf, 5000))
@@ -428,11 +462,22 @@ class CandleEngine:
                 order_asc=False,
             )
             rows = list(reversed(rows_desc))
-            out[tf] = [self._enrich_row(r) for r in rows]
+            # Build fully enriched candles in chronological order for correct
+            # context-dependent fields (ATR/vol_rel/cluster/swings/etc).
+            self.candles[sym][tf] = []
+            enriched_rows: List[Dict[str, Any]] = []
+            for r in rows:
+                raw = _norm_db_row(r)
+                e = self._enrich_candle(sym, tf, raw)
+                enriched_rows.append(e)
+                self.candles[sym][tf].append(e)
 
-        self.candles.setdefault(sym, {})
-        for tf, rows in out.items():
-            self.candles[sym][tf] = list(rows)
+            out[tf] = enriched_rows
+            self.latest_ts[sym][tf] = (
+                dt.datetime.fromisoformat(enriched_rows[-1]["ts"])
+                if enriched_rows
+                else None
+            )
 
         return out
 
@@ -461,6 +506,44 @@ class CandleEngine:
         start_utc = start_et.astimezone(dt.timezone.utc).isoformat()
         end_utc = end_et.astimezone(dt.timezone.utc).isoformat()
 
+        # Ensure containers exist so enrichment/aggregation has state
+        self.candles.setdefault(sym, {})
+        self.latest_ts.setdefault(sym, {})
+        self.candles[sym].setdefault("1m", [])
+        self.latest_ts[sym].setdefault("1m", None)
+        for tf in ("3m", "5m", "15m", "1h"):
+            self.candles[sym].setdefault(tf, [])
+            self.latest_ts[sym].setdefault(tf, None)
+
+        def _norm_db_row(r: Dict[str, Any]) -> Dict[str, Any]:
+            out_r = dict(r)
+            ts_utc = CandleEngine._parse_ts_utc(out_r.get("ts"))
+            out_r["ts"] = ts_utc.isoformat()
+            if out_r.get("open") is not None:
+                out_r["open"] = float(out_r["open"])
+            if out_r.get("high") is not None:
+                out_r["high"] = float(out_r["high"])
+            if out_r.get("low") is not None:
+                out_r["low"] = float(out_r["low"])
+            if out_r.get("close") is not None:
+                out_r["close"] = float(out_r["close"])
+            if "volume" in out_r:
+                out_r["volume"] = float(out_r.get("volume") or 0.0)
+            if out_r.get("vwap") is not None:
+                out_r["vwap"] = float(out_r["vwap"])
+            if out_r.get("trade_count") is not None:
+                try:
+                    out_r["trade_count"] = int(out_r["trade_count"])
+                except Exception:
+                    pass
+            out_r["symbol"] = sym
+            return out_r
+
+        # Live-sim behavior (match live bot):
+        # - ingest new 1m candles
+        # - enrich each 1m candle via _enrich_candle()
+        # - aggregate HTFs (3m/5m/15m/1h) from 1m via _aggregate_from_1m()
+
         rows_1m = await self._sb_fetch_candles(
             table=self._candle_tables["1m"],
             symbol=sym,
@@ -469,27 +552,19 @@ class CandleEngine:
             limit=25000,
             order_asc=True,
         )
-        one_min = [self._enrich_row(r) for r in rows_1m]
+        for r in rows_1m:
+            raw_1m = _norm_db_row(r)
+            e_1m = self._enrich_candle(sym, "1m", raw_1m)
+            self.candles[sym]["1m"].append(e_1m)
+            self.latest_ts[sym]["1m"] = dt.datetime.fromisoformat(e_1m["ts"])
 
-        tf_maps: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        for tf in ("3m", "5m", "15m", "1h"):
-            rows = await self._sb_fetch_candles(
-                table=self._candle_tables[tf],
-                symbol=sym,
-                ts_gte=start_utc,
-                ts_lte=end_utc,
-                limit=10000,
-                order_asc=True,
-            )
-            tf_maps[tf] = {self._enrich_row(r)["ts"]: self._enrich_row(r) for r in rows}
+            # Emit 1m first (same as live)
+            yield {"tf": "1m", "candle": e_1m}
 
-        for r in one_min:
-            ts_key = r["ts"]
-            yield {"tf": "1m", "candle": r}
-
+            # Aggregate + emit HTFs that close on this 1m step
             for tf in ("3m", "5m", "15m", "1h"):
-                c = tf_maps[tf].get(ts_key)
-                if c is not None:
+                new_htf = self._aggregate_from_1m(sym, tf, [e_1m])
+                for c in new_htf:
                     yield {"tf": tf, "candle": c}
 
     def _compute_cluster(
