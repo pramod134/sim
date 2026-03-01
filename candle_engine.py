@@ -370,22 +370,47 @@ class CandleEngine:
         """
         endpoint = f"{self._sb_url}/rest/v1/{table}"
 
-        params: List[Tuple[str, str]] = [
+        # PostgREST/Supabase commonly caps single responses (~1000 rows).
+        # Paginate with offset until we collect `limit` rows or run out.
+        target = max(0, int(limit))
+        if target == 0:
+            return []
+
+        page_size = min(1000, target)
+        base_params: List[Tuple[str, str]] = [
             ("select", "*"),
             ("symbol", f"eq.{symbol.upper()}"),
             ("order", f"ts.{'asc' if order_asc else 'desc'}"),
-            ("limit", str(int(limit))),
         ]
         if ts_gte:
-            params.append(("ts", f"gte.{ts_gte}"))
+            base_params.append(("ts", f"gte.{ts_gte}"))
         if ts_lte:
-            params.append(("ts", f"lte.{ts_lte}"))
+            base_params.append(("ts", f"lte.{ts_lte}"))
+
+        out: List[Dict[str, Any]] = []
+        offset = 0
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(endpoint, headers=self._sb_headers(), params=params)
-            r.raise_for_status()
-            data = r.json()
-            return data if isinstance(data, list) else []
+            while len(out) < target:
+                remaining = target - len(out)
+                this_page = min(page_size, remaining)
+                params = list(base_params)
+                params.append(("limit", str(int(this_page))))
+                params.append(("offset", str(int(offset))))
+
+                r = await client.get(endpoint, headers=self._sb_headers(), params=params)
+                r.raise_for_status()
+                data = r.json()
+                if not isinstance(data, list) or not data:
+                    break
+
+                out.extend(data)
+                # If we got fewer than requested, no more pages.
+                if len(data) < this_page:
+                    break
+                offset += len(data)
+
+        return out[:target]
 
     @staticmethod
     def _parse_ts_utc(row_ts: Any) -> dt.datetime:
