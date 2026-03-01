@@ -8,7 +8,7 @@ import httpx
 
 from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
-from liquidity_pool_builder import print_last_liquidity_output
+from liquidity_pool_builder import get_last_liquidity_output
 
 
 # ----------------------------- Supabase REST -----------------------------
@@ -312,7 +312,7 @@ async def main() -> int:
 
             # Print ONLY the last liquidity pool output (once per sim run)
             try:
-                print_last_liquidity_output()
+                print(f"[LIQ_POOL][FINAL_OUTPUT] {get_last_liquidity_output()}")
             except Exception as e:
                 print(f"[SIM_WORKER] Failed to print final liquidity output: {e}")
 
