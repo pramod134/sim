@@ -8,7 +8,7 @@ import httpx
 
 from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
-from liquidity_pool_builder import get_last_liquidity_output
+from liquidity_pool_builder import print_last_liquidity_output
 
 
 # ----------------------------- Supabase REST -----------------------------
@@ -233,9 +233,6 @@ async def main() -> int:
             first_live_ts: Dict[str, str] = {}
             last_live_ts: Dict[str, str] = {}
 
-            # ---- Diagnostics: what was sent to IndicatorBot -----------------
-            bot_on_candle_total = 0
-            bot_on_candle_by_tf: Dict[str, int] = {}
             first_live_to_bot: Optional[Dict[str, Any]] = None
             last_live_to_bot: Optional[Dict[str, Any]] = None
 
@@ -258,10 +255,6 @@ async def main() -> int:
                             last_live_ts[tf_s] = ts
                     except Exception:
                         pass
-
-                    # Track exactly what we forward to IndicatorBot
-                    bot_on_candle_total += 1
-                    bot_on_candle_by_tf[tf] = int(bot_on_candle_by_tf.get(tf, 0)) + 1
 
                     if first_live_to_bot is None:
                         first_live_to_bot = {
@@ -292,8 +285,6 @@ async def main() -> int:
 
             print(f"[SIM][LIVE] First live candle sent to bot: {first_live_to_bot}")
             print(f"[SIM][LIVE] Last live candle sent to bot:  {last_live_to_bot}")
-            print(f"[SIM][LIVE] IndicatorBot triggers: bootstrap=1 on_candle_total={bot_on_candle_total} on_candle_by_tf={bot_on_candle_by_tf}")
-
             # Compare with CandleEngine emitted stats
             try:
                 emit_counts = engine.get_live_emit_counts(symbol)
@@ -310,9 +301,15 @@ async def main() -> int:
             except Exception as e:
                 print(f"[SIM_WORKER] Failed to print event summary: {e}")
 
+            # Print only end-of-run diagnostics counts
+            try:
+                bot.dump_diag_counts(symbol)
+            except Exception as e:
+                print(f"[SIM_WORKER] Failed to print diag counts: {e}")
+
             # Print ONLY the last liquidity pool output (once per sim run)
             try:
-                print(f"[LIQ_POOL][FINAL_OUTPUT] {get_last_liquidity_output()}")
+                print_last_liquidity_output()
             except Exception as e:
                 print(f"[SIM_WORKER] Failed to print final liquidity output: {e}")
 
