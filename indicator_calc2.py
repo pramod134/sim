@@ -21,7 +21,14 @@
 # All values are as-of the LAST candle in `candles`.
 
 from typing import Any, Dict, List, Optional
+from collections import defaultdict, deque
 import math
+
+# ------------------------------------------------------------------
+# Diagnostics
+# ------------------------------------------------------------------
+_diag_call_count_by_tf = defaultdict(int)
+_diag_last5_candle_counts = defaultdict(lambda: deque(maxlen=5))
 
 
 # ---------------------------------------------------------------------------
@@ -431,15 +438,28 @@ def compute_advanced_extras(
       "vol_context": { ... },
     }
     """
+    tf = None
+    if candles:
+        tf = candles[-1].get("timeframe") or candles[-1].get("tf")
+
+    _diag_call_count_by_tf[tf] += 1
+    _diag_last5_candle_counts[tf].append(len(candles))
+
+    print(
+        f"[CALC2] tf={tf} "
+        f"calls={_diag_call_count_by_tf[tf]} "
+        f"last5_counts={list(_diag_last5_candle_counts[tf])}"
+    )
+
     if not candles:
         return {}
 
     momentum = _build_momentum_block(candles, base_snapshot)
-    
+
     # VWAP should be based on session-only candles if provided.
     vwap_input = session_candles if session_candles is not None else candles
     vwap = _build_vwap_block(vwap_input, base_snapshot)
-    
+
     htf = _build_htf_block(htf_snapshot)
     liq_summary = _build_liq_summary_block(candles, base_snapshot)
     vol_context = _build_vol_context_block(candles, base_snapshot)
