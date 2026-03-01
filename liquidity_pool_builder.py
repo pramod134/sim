@@ -1,13 +1,14 @@
 import datetime as dt
 import hashlib
-from collections import defaultdict, deque
+from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
 # ------------------------------------------------------------------
 # Diagnostics
 # ------------------------------------------------------------------
-_diag_call_count_by_tf = defaultdict(int)
-_diag_last5_candle_counts = defaultdict(lambda: deque(maxlen=5))
+_diag_calls_total = 0
+_diag_last5_spot_rows = deque(maxlen=5)
+_diag_last_output = None
 
 
 # ---------------------------------------------------------------------------
@@ -209,20 +210,10 @@ def build_liquidity_pool(
         "stats": { ... }
       }
     """
-    # Liquidity pool operates at symbol level
-    tf_key = "POOL"
+    global _diag_calls_total, _diag_last5_spot_rows, _diag_last_output
 
-    total_candles = 0
-    try:
-        sym = (symbol or "").upper()
-        sym_candles = (getattr(candle_engine, "candles", {}) or {}).get(sym, {})
-        for tf, cands in sym_candles.items():
-            total_candles += len(cands)
-    except Exception:
-        pass
-
-    _diag_call_count_by_tf[tf_key] += 1
-    _diag_last5_candle_counts[tf_key].append(total_candles)
+    _diag_calls_total += 1
+    _diag_last5_spot_rows.append(len(spot_tf_rows or []))
 
     sym = (symbol or "").upper()
 
@@ -520,7 +511,7 @@ def build_liquidity_pool(
             stats["min_level"] = min(prices)
             stats["max_level"] = max(prices)
 
-    return {
+    result = {
         "symbol": sym,
         "asof": asof_dt.isoformat(),
         "pool_version": POOL_VERSION,
@@ -528,3 +519,14 @@ def build_liquidity_pool(
         "levels": levels,
         "stats": stats,
     }
+
+    # Store ONLY the last output; do NOT print per call.
+    _diag_last_output = result
+
+    return result
+
+
+def print_last_liquidity_output():
+    """Call once at end of simulation to print the last liquidity pool output."""
+    global _diag_last_output
+    print(f"[LIQ_POOL][FINAL_OUTPUT] {_diag_last_output}")

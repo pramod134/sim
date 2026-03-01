@@ -21,15 +21,7 @@
 # All values are as-of the LAST candle in `candles`.
 
 from typing import Any, Dict, List, Optional
-from collections import defaultdict, deque
 import math
-
-# ------------------------------------------------------------------
-# Diagnostics
-# ------------------------------------------------------------------
-_diag_call_count_by_tf = defaultdict(int)
-_diag_last5_candle_counts = defaultdict(lambda: deque(maxlen=5))
-
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -438,12 +430,9 @@ def compute_advanced_extras(
       "vol_context": { ... },
     }
     """
-    tf = None
-    if candles:
+    if candles and len(candles) > 0:
         tf = candles[-1].get("timeframe") or candles[-1].get("tf")
-
-    _diag_call_count_by_tf[tf] += 1
-    _diag_last5_candle_counts[tf].append(len(candles))
+        print(f"[CALC2][RECEIVED_LAST_CANDLE][tf={tf}] {candles[-1]}")
 
     if not candles:
         return {}
