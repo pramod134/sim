@@ -526,7 +526,6 @@ def build_liquidity_pool(
     return result
 
 
-def print_last_liquidity_output():
-    """Call once at end of simulation to print the last liquidity pool output."""
-    global _diag_last_output
-    print(f"[LIQ_POOL][FINAL_OUTPUT] {_diag_last_output}")
+def get_last_liquidity_output():
+    """Return the last liquidity pool output for callers that want to log it."""
+    return _diag_last_output

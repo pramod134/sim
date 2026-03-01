@@ -2641,10 +2641,6 @@ def compute_structure_state(
 def compute_all_indicators(
     candles: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    if candles and isinstance(candles, list) and len(candles) > 0:
-        tf = candles[-1].get("timeframe") or candles[-1].get("tf")
-        print(f"[CALC1][RECEIVED_LAST_CANDLE][tf={tf}] {candles[-1]}")
-
     trend = compute_trend(candles)
 
     pivots = compute_pivots_len1(candles)

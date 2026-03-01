@@ -430,10 +430,6 @@ def compute_advanced_extras(
       "vol_context": { ... },
     }
     """
-    if candles and len(candles) > 0:
-        tf = candles[-1].get("timeframe") or candles[-1].get("tf")
-        print(f"[CALC2][RECEIVED_LAST_CANDLE][tf={tf}] {candles[-1]}")
-
     if not candles:
         return {}
 
