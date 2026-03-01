@@ -600,6 +600,9 @@ class CandleEngine:
                 self.live_first_emitted[sym] = {"tf": tf, "ts": c.get("ts"), "candle": c}
             self.live_last_emitted[sym] = {"tf": tf, "ts": c.get("ts"), "candle": c}
 
+        # Keep last seen 1m (for end-of-day partial flush)
+        last_1m: Optional[Dict[str, Any]] = None
+
         for r in rows_1m:
             raw_1m = _norm_db_row(r)
             e_1m = self._enrich_candle(sym, "1m", raw_1m)
@@ -608,6 +611,7 @@ class CandleEngine:
                 continue
             self.candles[sym]["1m"].append(e_1m)
             self.latest_ts[sym]["1m"] = dt.datetime.fromisoformat(e_1m["ts"])
+            last_1m = e_1m
 
             # Emit 1m first (same as live)
             _diag_record_emit("1m", e_1m)
@@ -619,6 +623,66 @@ class CandleEngine:
                 for c in new_htf:
                     _diag_record_emit(tf, c)
                     yield {"tf": tf, "candle": c}
+
+        # ---- EOD flush: emit last partial 1h candle (as full "1h") ----------
+        # Live bot behavior: keep and forward the last partial hour (e.g., 15:30–16:00 ET).
+        try:
+            if last_1m is not None:
+                # Compute the 1h bucket start anchored to 09:30 ET.
+                # We flush the bucket that contains (end_et - 1 minute).
+                last_et = dt.datetime.fromisoformat(last_1m["ts_et"])
+                anchor = last_et.replace(hour=9, minute=30, second=0, microsecond=0)
+                if last_et < anchor:
+                    # Shouldn't happen in RTH-only, but guard anyway.
+                    pass
+                else:
+                    delta_min = int((last_et - anchor).total_seconds() // 60)
+                    bucket_start_et = anchor + dt.timedelta(minutes=(delta_min // 60) * 60)
+
+                    # Collect 1m candles in the current (possibly partial) 1h bucket.
+                    # Use ts_et for precise ET bucketing.
+                    bucket_1m = []
+                    for c in reversed(self.candles[sym].get("1m", [])):
+                        ts_et = dt.datetime.fromisoformat(c.get("ts_et"))
+                        if ts_et < bucket_start_et:
+                            break
+                        # only same day + rth (defensive)
+                        if c.get("session") == "rth":
+                            bucket_1m.append(c)
+                    bucket_1m.reverse()
+
+                    # Only emit if we have data and it's not already a closed 1h candle for this bucket.
+                    if bucket_1m:
+                        o = bucket_1m[0]["open"]
+                        h = max(x["high"] for x in bucket_1m)
+                        l = min(x["low"] for x in bucket_1m)
+                        cl = bucket_1m[-1]["close"]
+                        v = sum(float(x.get("volume") or 0) for x in bucket_1m)
+
+                        raw_1h = {
+                            # Keep timestamp convention consistent with existing aggregation:
+                            # use the last 1m candle ts within the bucket.
+                            "ts": bucket_1m[-1]["ts"],
+                            "open": o,
+                            "high": h,
+                            "low": l,
+                            "close": cl,
+                            "volume": v,
+                        }
+                        e_1h = self._enrich_candle(sym, "1h", raw_1h)
+
+                        # Avoid duplicates: don't emit if last existing 1h has same ts.
+                        last_existing = None
+                        if self.candles.get(sym, {}).get("1h"):
+                            last_existing = self.candles[sym]["1h"][-1].get("ts")
+                        if last_existing != e_1h.get("ts"):
+                            self.candles[sym].setdefault("1h", []).append(e_1h)
+                            self.latest_ts[sym]["1h"] = dt.datetime.fromisoformat(e_1h["ts"])
+                            _diag_record_emit("1h", e_1h)
+                            yield {"tf": "1h", "candle": e_1h}
+        except Exception:
+            # Never let diagnostics/flush break the sim loop.
+            pass
 
     def _compute_cluster(
         self,
