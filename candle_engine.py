@@ -532,7 +532,6 @@ class CandleEngine:
             last_ts = arr[-1].get("ts") if n else None
             seed_tf_stats[tf] = {"n": n, "first_ts": first_ts, "last_ts": last_ts}
         self.seed_stats[sym] = seed_tf_stats
-        print(f"[CANDLE_ENGINE][SEED] {sym} seed_stats={seed_tf_stats}")
 
         return out
 

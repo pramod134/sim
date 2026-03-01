@@ -2655,12 +2655,6 @@ def compute_all_indicators(
     _diag_call_count_by_tf[tf] += 1
     _diag_last5_candle_counts[tf].append(len(candles))
 
-    print(
-        f"[CALC1] tf={tf} "
-        f"calls={_diag_call_count_by_tf[tf]} "
-        f"last5_counts={list(_diag_last5_candle_counts[tf])}"
-    )
-
     trend = compute_trend(candles)
 
     pivots = compute_pivots_len1(candles)
