@@ -643,34 +643,6 @@ class IndicatorBot:
             except Exception as e:
                 pass
 
-    def _diag_maybe_print_first10(self) -> None:
-        """
-        Print first 10 candles received by on_candle (compact).
-        """
-        if self._diag_first10_printed:
-            return
-        if len(self._diag_first10) < 10:
-            return
-        self._diag_first10_printed = True
-        print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
-        for i, row in enumerate(self._diag_first10[:10]):
-            print(f"[INDICATOR_BOT][DIAG] #{i+1}: {row}")
-
-    def _diag_print_summary(self, *, symbol: str, day_et: str) -> None:
-        """
-        Print a one-time summary of trigger/call counts.
-        """
-        key = (symbol, day_et)
-        if self._diag_summary_printed.get(key):
-            return
-        self._diag_summary_printed[key] = True
-
-        print(f"[INDICATOR_BOT][DIAG] Summary for {symbol} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._diag_on_candle_total} on_candle_by_tf={self._diag_on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._diag_calc1_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._diag_calc2_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._diag_spot_event_by_tf}")
-
     async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
         """
         Push one candle into the bot (simulation mode).
@@ -697,7 +669,6 @@ class IndicatorBot:
                 "volume": candle.get("volume"),
                 "session": candle.get("session"),
             })
-            self._diag_maybe_print_first10()
 
         asof = candle.get("ts") or candle.get("asof")
         key = (sym, tf)
@@ -828,16 +799,6 @@ class IndicatorBot:
         self._log_indicators_once(sym, tf, ts_dt, snapshot, advanced, strategies)
         # Track counts only; do NOT print events live
         self._track_event_counts(sym, tf, ts_dt, ev_out)
-
-        # Diagnostics: print summary once per day when we receive the final 1h (partial) candle.
-        # Your live-style engine flushes the last partial hour as an "1h" candle at time_et == 15:30.
-        try:
-            day_et = str(last_candle.get("date_et") or "")
-            time_et = str(last_candle.get("time_et") or "")
-            if tf == "1h" and day_et and time_et == "15:30:00":
-                self._diag_print_summary(symbol=sym, day_et=day_et)
-        except Exception:
-            pass
 
         if not self.sim_mode:
             await update_indicators_in_spot_tf(

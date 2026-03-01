@@ -224,12 +224,6 @@ def build_liquidity_pool(
     _diag_call_count_by_tf[tf_key] += 1
     _diag_last5_candle_counts[tf_key].append(total_candles)
 
-    print(
-        f"[LIQ_POOL] symbol={symbol} "
-        f"calls={_diag_call_count_by_tf[tf_key]} "
-        f"last5_total_candles={list(_diag_last5_candle_counts[tf_key])}"
-    )
-
     sym = (symbol or "").upper()
 
     # asof: use candle_engine latest candle ts if present, else spot_tf latest

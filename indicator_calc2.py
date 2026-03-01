@@ -445,12 +445,6 @@ def compute_advanced_extras(
     _diag_call_count_by_tf[tf] += 1
     _diag_last5_candle_counts[tf].append(len(candles))
 
-    print(
-        f"[CALC2] tf={tf} "
-        f"calls={_diag_call_count_by_tf[tf]} "
-        f"last5_counts={list(_diag_last5_candle_counts[tf])}"
-    )
-
     if not candles:
         return {}
 
