@@ -965,15 +965,8 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     last_candle = ctx.last_candle or {}
     ts = last_candle.get("ts")
 
-    if DEBUG and ts:
-        # "received time" is wall-clock at evaluation; candle ts is close timestamp.
-        print(f"[SPOT_EVT][RECV] sym={symbol} tf={timeframe} recv_utc={_now_utc_iso()} candle_ts={ts}")
-
     # Debug gating (first N candles per symbol+tf only)
     dbg_key = (symbol, timeframe)
-    if DEBUG and ts:
-        print(f"[SPOT_EVT][CALL] {symbol} {timeframe} @ {ts}")
-
     dbg_seen = _dbg_seen_counts.get(dbg_key, 0)
     dbg_on = bool(DEBUG and ts and (dbg_seen < SPOT_EVENT_FIRST_N))
     if dbg_on:
@@ -999,9 +992,6 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     # 1) Displacement
     # -------------------------
     disp = detect_displacement(last_candle)
-    if DEBUG and ts:
-        print(f"[SPOT_EVT][CALL] detect_displacement() called for {symbol} {timeframe} @ {ts}")
-
     displacement_fired = False
     if disp and ts:
         et, score, meta = disp
@@ -1032,16 +1022,9 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     bos = None
     if ts:
         bos = detect_bos(last_candle, structural_highs, structural_lows, displacement_fired)
-    if DEBUG and ts:
-        print(f"[SPOT_EVT][CALL] detect_bos() called for {symbol} {timeframe} @ {ts}")
 
     if bos and ts:
         et, score, meta = bos
-        if DEBUG:
-            print(
-                f"[SPOT_EVT][BOS] sym={symbol} tf={timeframe} ts={ts} type={et} "
-                f"ref={meta.get('ref_level')} ref_ts={meta.get('ref_ts')} close={meta.get('break_close')}"
-            )
         ev = _make_event(et, ts, timeframe, score, meta)
         events_latest[et] = ev
         _append_recent_unique(events_recent, ev)
@@ -1101,16 +1084,9 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     choch = None
     if ts:
         choch = detect_choch(last_candle, swing_highs, swing_lows, ctx.structure_state)
-    if DEBUG and ts:
-        print(f"[SPOT_EVT][CALL] detect_choch() called for {symbol} {timeframe} @ {ts}")
 
     if choch and ts:
         et, score, meta = choch
-        if DEBUG:
-            print(
-                f"[SPOT_EVT][CHOCH] sym={symbol} tf={timeframe} ts={ts} type={et} "
-                f"state={meta.get('structure_state')} ref={meta.get('ref_level')} ref_ts={meta.get('ref_ts')} close={meta.get('break_close')}"
-            )
         ev = _make_event(et, ts, timeframe, score, meta)
         events_latest[et] = ev
         _append_recent_unique(events_recent, ev)
@@ -1203,34 +1179,11 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         swl = len(ctx.swing_lows or [])
         st = ctx.structure_state
 
-        print(f"[SPOT_EVT][DBG#{dbg_seen+1}] sym={symbol} tf={timeframe} candle_ts={ts}")
-        print(
-            f"[SPOT_EVT][DBG#{dbg_seen+1}][CANDLE] dir={last_candle.get('direction')} "
-            f"close={last_candle.get('close')} mom_atr={mom_atr} vol_rel={vol_rel} "
-            f"spread_strength={spread_strength} cluster_state={cluster_state}"
-        )
-        print(
-            f"[SPOT_EVT][DBG#{dbg_seen+1}][STRUCT_IN] structural_highs={sh} structural_lows={sl} "
-            f"swing_highs={swh} swing_lows={swl} structure_state={st}"
-        )
-        print(
-            f"[SPOT_EVT][DBG#{dbg_seen+1}][FIRED] "
-            f"displacement={dbg_disp_et or '-'} sweep={dbg_sweep_et or '-'} "
-            f"bos={dbg_bos_et or '-'} choch={dbg_choch_et or '-'} "
-            f"fvg_events={len(dbg_fvg_events)} fvgs_now={len(ctx.fvgs_now or [])} "
-            f"fvgs_prev={-1 if ctx.fvgs_prev is None else len(ctx.fvgs_prev or [])}"
-        )
 
         # Sample a few FVG events emitted on this candle
         n_sample = max(0, SPOT_EVENT_FVG_SAMPLE)
         for i, ev in enumerate((dbg_fvg_events or [])[:n_sample]):
             meta = ev.get("meta") or {}
-            print(
-                f"[SPOT_EVT][DBG#{dbg_seen+1}][FVG_EVT] {i+1}/{min(len(dbg_fvg_events), n_sample)} "
-                f"type={ev.get('type')} ev.ts={ev.get('ts')} created_ts={meta.get('created_ts')} "
-                f"first_touch_ts={meta.get('first_touch_ts')} filled_ts={meta.get('filled_ts')} "
-                f"sig={(meta.get('fvg_sig') or '')[:24]}"
-            )
 
     after_snapshot = (json.dumps(events_latest, sort_keys=True, default=str),
                       json.dumps(events_active, sort_keys=True, default=str),

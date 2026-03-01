@@ -22,25 +22,20 @@ from candle_engine import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[MAIN] Initializing CandleEngine...")
     engine = await init_engine_from_env()
     app.state.candle_engine = engine
 
     loop = asyncio.get_event_loop()
     loop.create_task(engine.run_loop(interval_seconds=180))
-    print("[MAIN] CandleEngine startup complete. Live loop running.")
 
-    print("[MAIN] Initializing IndicatorBot...")
     indicator_bot = IndicatorBot(engine=engine)
     app.state.indicator_bot = indicator_bot
     loop.create_task(indicator_bot.run_loop(interval_seconds=60))
-    print("[MAIN] IndicatorBot startup complete. Indicator loop running.")
 
     # App is ready
     yield
 
     # Optional: shutdown logic later
-    # print("[MAIN] Shutting down...")
 
 
 app = FastAPI(
@@ -53,7 +48,6 @@ app = FastAPI(
 """
 @app.on_event("startup")
 async def on_startup():
-    print("[MAIN] Initializing CandleEngine...")
     
     engine = await init_engine_from_env()
     app.state.candle_engine = engine
@@ -61,7 +55,6 @@ async def on_startup():
     # Start CandleEngine loop
     loop = asyncio.get_event_loop()
     loop.create_task(engine.run_loop(interval_seconds=180))
-    print("[MAIN] CandleEngine startup complete. Live loop running.")
 
     # ----------------------------------------------------
     # Initialize and start IndicatorBot
@@ -70,7 +63,6 @@ async def on_startup():
     app.state.indicator_bot = indicator_bot  # optional, but handy
 
     loop.create_task(indicator_bot.run_loop(interval_seconds=60))
-    print("[MAIN] IndicatorBot startup complete. Indicator loop running.")
     """
 
 

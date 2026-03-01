@@ -438,7 +438,6 @@ def compute_advanced_extras(
     
     # VWAP should be based on session-only candles if provided.
     vwap_input = session_candles if session_candles is not None else candles
-    # print(f"[VWAP] Using {len(vwap_input)} candles for VWAP calculation.")
     vwap = _build_vwap_block(vwap_input, base_snapshot)
     
     htf = _build_htf_block(htf_snapshot)
