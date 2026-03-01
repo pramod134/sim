@@ -405,6 +405,25 @@ class IndicatorBot:
         self._event_by_day_latest: Dict[str, Dict[str, int]] = {}
         self._event_by_day_active: Dict[str, Dict[str, int]] = {}
 
+        # -------------------------------------------------------------------
+        # Diagnostics: trigger/call counts (simulation debugging)
+        # -------------------------------------------------------------------
+        # How many times on_candle() is invoked per TF
+        self._diag_on_candle_by_tf: Dict[str, int] = {}
+        self._diag_on_candle_total: int = 0
+
+        # How many times indicator_calc1/2 and spot_event are called per TF
+        self._diag_calc1_by_tf: Dict[str, int] = {}
+        self._diag_calc2_by_tf: Dict[str, int] = {}
+        self._diag_spot_event_by_tf: Dict[str, int] = {}
+
+        # First 10 candles received (in on_candle path)
+        self._diag_first10: List[Dict[str, Any]] = []
+        self._diag_first10_printed: bool = False
+
+        # Print summary once per (symbol, date_et) at EOD trigger
+        self._diag_summary_printed: Dict[Tuple[str, str], bool] = {}
+
     def _json(self, obj: Any) -> str:
         try:
             return json.dumps(obj, default=str, ensure_ascii=False)
@@ -592,12 +611,15 @@ class IndicatorBot:
                 session_candles = closed_candles
 
             snapshot = compute_all_indicators(closed_candles)
+            # Diagnostics: bootstrap also calls calc1/calc2 (seed warmup)
+            self._diag_calc1_by_tf[tf] = int(self._diag_calc1_by_tf.get(tf, 0)) + 1
             advanced = compute_advanced_extras(
                 candles=closed_candles,
                 base_snapshot=snapshot,
                 htf_snapshot=None,
                 session_candles=session_candles,
             )
+            self._diag_calc2_by_tf[tf] = int(self._diag_calc2_by_tf.get(tf, 0)) + 1
 
             # Multi-TF VP enrichment map will be built after collecting all snapshots
             self.last_snapshots[symbol][tf] = snapshot
@@ -621,6 +643,34 @@ class IndicatorBot:
             except Exception as e:
                 pass
 
+    def _diag_maybe_print_first10(self) -> None:
+        """
+        Print first 10 candles received by on_candle (compact).
+        """
+        if self._diag_first10_printed:
+            return
+        if len(self._diag_first10) < 10:
+            return
+        self._diag_first10_printed = True
+        print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
+        for i, row in enumerate(self._diag_first10[:10]):
+            print(f"[INDICATOR_BOT][DIAG] #{i+1}: {row}")
+
+    def _diag_print_summary(self, *, symbol: str, day_et: str) -> None:
+        """
+        Print a one-time summary of trigger/call counts.
+        """
+        key = (symbol, day_et)
+        if self._diag_summary_printed.get(key):
+            return
+        self._diag_summary_printed[key] = True
+
+        print(f"[INDICATOR_BOT][DIAG] Summary for {symbol} day_et={day_et}")
+        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._diag_on_candle_total} on_candle_by_tf={self._diag_on_candle_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._diag_calc1_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._diag_calc2_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._diag_spot_event_by_tf}")
+
     async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
         """
         Push one candle into the bot (simulation mode).
@@ -629,6 +679,25 @@ class IndicatorBot:
         tf = timeframe
         if not sym or not tf:
             return
+
+        # Diagnostics: count triggers per TF (every on_candle invocation)
+        self._diag_on_candle_total += 1
+        self._diag_on_candle_by_tf[tf] = int(self._diag_on_candle_by_tf.get(tf, 0)) + 1
+
+        # Capture first 10 received candles (compact)
+        if len(self._diag_first10) < 10:
+            self._diag_first10.append({
+                "tf": tf,
+                "ts": candle.get("ts"),
+                "ts_et": candle.get("ts_et"),
+                "open": candle.get("open"),
+                "high": candle.get("high"),
+                "low": candle.get("low"),
+                "close": candle.get("close"),
+                "volume": candle.get("volume"),
+                "session": candle.get("session"),
+            })
+            self._diag_maybe_print_first10()
 
         asof = candle.get("ts") or candle.get("asof")
         key = (sym, tf)
@@ -662,12 +731,16 @@ class IndicatorBot:
             session_candles = closed_candles
 
         snapshot = compute_all_indicators(closed_candles)
+        # Diagnostics: calc1 call count per TF
+        self._diag_calc1_by_tf[tf] = int(self._diag_calc1_by_tf.get(tf, 0)) + 1
         advanced = compute_advanced_extras(
             candles=closed_candles,
             base_snapshot=snapshot,
             htf_snapshot=None,
             session_candles=session_candles,
         )
+        # Diagnostics: calc2 call count per TF
+        self._diag_calc2_by_tf[tf] = int(self._diag_calc2_by_tf.get(tf, 0)) + 1
 
         self.last_snapshots.setdefault(sym, {})[tf] = snapshot
         ts_dt = _ensure_dt(last_candle.get("ts") or asof)
@@ -730,6 +803,8 @@ class IndicatorBot:
             prev_events_recent=prev_recent,
         )
         ev_out = compute_spot_events(ev_ctx)
+        # Diagnostics: spot_event call count per TF
+        self._diag_spot_event_by_tf[tf] = int(self._diag_spot_event_by_tf.get(tf, 0)) + 1
 
         self.last_events_state.setdefault(sym, {})[tf] = {
             "events_latest": ev_out.get("events_latest"),
@@ -753,6 +828,16 @@ class IndicatorBot:
         self._log_indicators_once(sym, tf, ts_dt, snapshot, advanced, strategies)
         # Track counts only; do NOT print events live
         self._track_event_counts(sym, tf, ts_dt, ev_out)
+
+        # Diagnostics: print summary once per day when we receive the final 1h (partial) candle.
+        # Your live-style engine flushes the last partial hour as an "1h" candle at time_et == 15:30.
+        try:
+            day_et = str(last_candle.get("date_et") or "")
+            time_et = str(last_candle.get("time_et") or "")
+            if tf == "1h" and day_et and time_et == "15:30:00":
+                self._diag_print_summary(symbol=sym, day_et=day_et)
+        except Exception:
+            pass
 
         if not self.sim_mode:
             await update_indicators_in_spot_tf(
@@ -966,4 +1051,3 @@ class IndicatorBot:
                 "strategies": strategies,
                 "events": self.last_events_state[sym_upper][tf],
             }
-
