@@ -3,6 +3,7 @@ import os
 import asyncio
 import datetime as dt
 import json
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -16,6 +17,7 @@ from indicator_calc2 import compute_advanced_extras
 
 
 from strategies import evaluate_strategies
+from liquidity_pool_builder import build_liquidity_pool
 
 # Events engine (NEW)
 from spot_event import SpotEventContext, compute_spot_events
@@ -405,24 +407,44 @@ class IndicatorBot:
         self._event_by_day_latest: Dict[str, Dict[str, int]] = {}
         self._event_by_day_active: Dict[str, Dict[str, int]] = {}
 
-        # -------------------------------------------------------------------
-        # Diagnostics: trigger/call counts (simulation debugging)
-        # -------------------------------------------------------------------
-        # How many times on_candle() is invoked per TF
-        self._diag_on_candle_by_tf: Dict[str, int] = {}
-        self._diag_on_candle_total: int = 0
+        # ---------------- Diagnostics (minimal, end-of-run only) ----------------
+        # spot_event calls per TF
+        self._diag_spot_event_calls_by_tf: Dict[str, int] = defaultdict(int)
+        # liquidity builder calls per TF (TF that triggered rebuild)
+        self._diag_liq_builder_calls_by_tf: Dict[str, int] = defaultdict(int)
 
-        # How many times indicator_calc1/2 and spot_event are called per TF
-        self._diag_calc1_by_tf: Dict[str, int] = {}
-        self._diag_calc2_by_tf: Dict[str, int] = {}
-        self._diag_spot_event_by_tf: Dict[str, int] = {}
+    def dump_diag_counts(self, symbol: str = "") -> None:
+        """Print diagnostics once at end of simulation."""
+        prefix = f"[DIAG]{'[' + symbol + ']' if symbol else ''}"
+        print(f"{prefix} spot_event_calls_by_tf={dict(self._diag_spot_event_calls_by_tf)}")
+        print(f"{prefix} liq_builder_calls_by_tf={dict(self._diag_liq_builder_calls_by_tf)}")
 
-        # First 10 candles received (in on_candle path)
-        self._diag_first10: List[Dict[str, Any]] = []
-        self._diag_first10_printed: bool = False
+    def _maybe_rebuild_liquidity_pool(self, *, symbol: str, trigger_tf: str) -> None:
+        """Rebuild liquidity pool (if enabled) and count calls per trigger TF."""
+        if not self.enable_liquidity_pool:
+            return
+        try:
+            # Build minimal spot rows from latest snapshots
+            spot_rows = []
+            for tfx in self.timeframes:
+                snapx = self.last_snapshots.get(symbol, {}).get(tfx)
+                if not isinstance(snapx, dict):
+                    continue
+                spot_rows.append(
+                    {
+                        "symbol": symbol,
+                        "timeframe": tfx,
+                        "asof": snapx.get("asof"),
+                        "liquidity": snapx.get("liquidity") or {},
+                        "extras": snapx.get("extras") or {},
+                    }
+                )
 
-        # Print summary once per (symbol, date_et) at EOD trigger
-        self._diag_summary_printed: Dict[Tuple[str, str], bool] = {}
+            pool = build_liquidity_pool(symbol=symbol, spot_tf_rows=spot_rows, candle_engine=self.engine)
+            self.liq_pool_cache[symbol] = pool
+            self._diag_liq_builder_calls_by_tf[str(trigger_tf)] += 1
+        except Exception as e:
+            print(f"[DIAG][LIQ_POOL] rebuild failed trigger_tf={trigger_tf} err={e}")
 
     def _json(self, obj: Any) -> str:
         try:
@@ -612,14 +634,12 @@ class IndicatorBot:
 
             snapshot = compute_all_indicators(closed_candles)
             # Diagnostics: bootstrap also calls calc1/calc2 (seed warmup)
-            self._diag_calc1_by_tf[tf] = int(self._diag_calc1_by_tf.get(tf, 0)) + 1
             advanced = compute_advanced_extras(
                 candles=closed_candles,
                 base_snapshot=snapshot,
                 htf_snapshot=None,
                 session_candles=session_candles,
             )
-            self._diag_calc2_by_tf[tf] = int(self._diag_calc2_by_tf.get(tf, 0)) + 1
 
             # Multi-TF VP enrichment map will be built after collecting all snapshots
             self.last_snapshots[symbol][tf] = snapshot
@@ -643,6 +663,9 @@ class IndicatorBot:
             except Exception as e:
                 pass
 
+        # Liquidity pool rebuild once after bootstrap snapshots exist
+        self._maybe_rebuild_liquidity_pool(symbol=symbol, trigger_tf="bootstrap")
+
     async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
         """
         Push one candle into the bot (simulation mode).
@@ -651,24 +674,6 @@ class IndicatorBot:
         tf = timeframe
         if not sym or not tf:
             return
-
-        # Diagnostics: count triggers per TF (every on_candle invocation)
-        self._diag_on_candle_total += 1
-        self._diag_on_candle_by_tf[tf] = int(self._diag_on_candle_by_tf.get(tf, 0)) + 1
-
-        # Capture first 10 received candles (compact)
-        if len(self._diag_first10) < 10:
-            self._diag_first10.append({
-                "tf": tf,
-                "ts": candle.get("ts"),
-                "ts_et": candle.get("ts_et"),
-                "open": candle.get("open"),
-                "high": candle.get("high"),
-                "low": candle.get("low"),
-                "close": candle.get("close"),
-                "volume": candle.get("volume"),
-                "session": candle.get("session"),
-            })
 
         asof = candle.get("ts") or candle.get("asof")
         key = (sym, tf)
@@ -702,20 +707,19 @@ class IndicatorBot:
             session_candles = closed_candles
 
         snapshot = compute_all_indicators(closed_candles)
-        # Diagnostics: calc1 call count per TF
-        self._diag_calc1_by_tf[tf] = int(self._diag_calc1_by_tf.get(tf, 0)) + 1
         advanced = compute_advanced_extras(
             candles=closed_candles,
             base_snapshot=snapshot,
             htf_snapshot=None,
             session_candles=session_candles,
         )
-        # Diagnostics: calc2 call count per TF
-        self._diag_calc2_by_tf[tf] = int(self._diag_calc2_by_tf.get(tf, 0)) + 1
 
         self.last_snapshots.setdefault(sym, {})[tf] = snapshot
         ts_dt = _ensure_dt(last_candle.get("ts") or asof)
         self.last_processed_ts.setdefault(sym, {})[tf] = ts_dt
+
+        # Liquidity pool rebuild on each processed candle (like live flow, if enabled)
+        self._maybe_rebuild_liquidity_pool(symbol=sym, trigger_tf=tf)
 
         strategies = evaluate_strategies(
             symbol=sym,
@@ -774,8 +778,7 @@ class IndicatorBot:
             prev_events_recent=prev_recent,
         )
         ev_out = compute_spot_events(ev_ctx)
-        # Diagnostics: spot_event call count per TF
-        self._diag_spot_event_by_tf[tf] = int(self._diag_spot_event_by_tf.get(tf, 0)) + 1
+        self._diag_spot_event_calls_by_tf[str(tf)] += 1
 
         self.last_events_state.setdefault(sym, {})[tf] = {
             "events_latest": ev_out.get("events_latest"),
@@ -992,6 +995,7 @@ class IndicatorBot:
                 prev_events_recent=prev_recent,
             )
             ev_out = compute_spot_events(ev_ctx)
+            self._diag_spot_event_calls_by_tf[str(tf)] += 1
 
             self.last_events_state.setdefault(sym_upper, {})[tf] = {
                 "events_latest": ev_out.get("events_latest"),

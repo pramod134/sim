@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 _diag_calls_total = 0
 _diag_last5_spot_rows = deque(maxlen=5)
 _diag_last_output = None
+_LAST_LIQ_POOL_OUTPUT = None
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +211,7 @@ def build_liquidity_pool(
         "stats": { ... }
       }
     """
-    global _diag_calls_total, _diag_last5_spot_rows, _diag_last_output
+    global _diag_calls_total, _diag_last5_spot_rows, _diag_last_output, _LAST_LIQ_POOL_OUTPUT
 
     _diag_calls_total += 1
     _diag_last5_spot_rows.append(len(spot_tf_rows or []))
@@ -522,6 +523,7 @@ def build_liquidity_pool(
 
     # Store ONLY the last output; do NOT print per call.
     _diag_last_output = result
+    _LAST_LIQ_POOL_OUTPUT = result
 
     return result
 
@@ -529,3 +531,9 @@ def build_liquidity_pool(
 def get_last_liquidity_output():
     """Return the last liquidity pool output for callers that want to log it."""
     return _diag_last_output
+
+
+def print_last_liquidity_output() -> None:
+    """Print only the final (most recent) liquidity pool output once."""
+    global _LAST_LIQ_POOL_OUTPUT
+    print(f"[LIQ_POOL][FINAL_OUTPUT] {_LAST_LIQ_POOL_OUTPUT}")
