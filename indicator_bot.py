@@ -1,4 +1,5 @@
 import math
+import os
 import asyncio
 import datetime as dt
 import json
@@ -381,9 +382,16 @@ class IndicatorBot:
         self._logged_liqpool_once: Dict[Tuple[str, str], bool] = {}
 
         # ---------------- Event counters (final summary only) ----------------
-        # Count only on transitions (None -> non-None).
-        self._prev_latest_state: Dict[str, bool] = {}
-        self._prev_active_state: Dict[str, bool] = {}
+        # Count on *new occurrences* (per-event timestamp changes), not just None->non-None.
+        # This is important because events_latest slots are overwritten (value stays non-None)
+        # and trackers can refresh without going back to None.
+        self._last_seen_latest_ts: Dict[str, str] = {}          # events_latest[name] -> last seen event.ts
+        self._last_seen_active_anchor_ts: Dict[str, str] = {}   # events_active[slot].active.anchor_ts -> last seen
+
+        # Keep candle timestamps for each event occurrence (printed in final summary).
+        # Stored as compact strings: "<tf>:<ts>".
+        self._event_ts_latest: Dict[str, List[str]] = {}
+        self._event_ts_active: Dict[str, List[str]] = {}
 
         # totals
         self._event_total_latest: Dict[str, int] = {}
@@ -442,13 +450,19 @@ class IndicatorBot:
         d = bucket.setdefault(day_et, {})
         d[name] = d.get(name, 0) + 1
 
+    def _append_event_ts(self, bucket: Dict[str, List[str]], name: str, tf: str, ts: str) -> None:
+        if not ts:
+            return
+        arr = bucket.setdefault(name, [])
+        arr.append(f"{tf}:{ts}")
+
     def _track_event_counts(self, symbol: str, tf: str, asof_utc: dt.datetime, ev_out: Dict[str, Any]) -> None:
         """
         Track counts (no printing):
           - totals
           - by timeframe
           - by day (ET)
-        Count only transitions: None -> non-None for each key.
+        Count occurrences by tracking per-event timestamp changes for each key.
         """
         latest = (ev_out or {}).get("events_latest") or {}
         active = (ev_out or {}).get("events_active") or {}
@@ -460,25 +474,46 @@ class IndicatorBot:
         except Exception:
             day_et = str(asof_utc.date())
 
-        # latest transitions
+        # latest occurrences (count when the event's own ts changes)
         for name, value in latest.items():
-            cur = value is not None
-            prev = self._prev_latest_state.get(name, False)
-            if cur and not prev:
+            if value is None:
+                continue
+            ev_ts: Optional[str] = None
+            if isinstance(value, dict):
+                ev_ts = value.get("ts")
+            if not ev_ts:
+                # fallback: use candle asof (still useful for debugging)
+                ev_ts = asof_utc.isoformat()
+
+            prev_ts = self._last_seen_latest_ts.get(name)
+            if ev_ts != prev_ts:
                 self._inc_event(self._event_total_latest, name)
                 self._inc_event_tf(self._event_by_tf_latest, tf, name)
                 self._inc_event_day(self._event_by_day_latest, day_et, name)
-            self._prev_latest_state[name] = cur
+                self._append_event_ts(self._event_ts_latest, name, tf, ev_ts)
+                self._last_seen_latest_ts[name] = ev_ts
 
-        # active transitions
+        # active occurrences (trackers: count when active.anchor_ts changes)
         for name, value in active.items():
-            cur = value is not None
-            prev = self._prev_active_state.get(name, False)
-            if cur and not prev:
+            if not isinstance(value, dict):
+                continue
+            active_obj = value.get("active")
+            if not isinstance(active_obj, dict):
+                continue
+            if active_obj.get("status") != "active":
+                continue
+
+            anchor_ts = active_obj.get("anchor_ts") or active_obj.get("ts")
+            if not anchor_ts:
+                anchor_ts = asof_utc.isoformat()
+
+            prev_anchor_ts = self._last_seen_active_anchor_ts.get(name)
+            if anchor_ts != prev_anchor_ts:
                 self._inc_event(self._event_total_active, name)
                 self._inc_event_tf(self._event_by_tf_active, tf, name)
                 self._inc_event_day(self._event_by_day_active, day_et, name)
-            self._prev_active_state[name] = cur
+                self._append_event_ts(self._event_ts_active, name, tf, anchor_ts)
+                self._last_seen_active_anchor_ts[name] = anchor_ts
 
     def print_event_summary(self) -> None:
         """
@@ -492,13 +527,37 @@ class IndicatorBot:
 
         print("\n===== EVENT SUMMARY (FINAL) =====")
 
-        print("\n--- TOTAL: events_latest (transition counts) ---")
+        print("\n--- TOTAL: events_latest (occurrence counts) ---")
         for name, cnt in _sorted_items(self._event_total_latest):
             print(f"{name}: {cnt}")
 
-        print("\n--- TOTAL: events_active (transition counts) ---")
+        print("\n--- TOTAL: events_active (occurrence counts) ---")
         for name, cnt in _sorted_items(self._event_total_active):
             print(f"{name}: {cnt}")
+
+        # Print candle timestamps for each event occurrence (bounded to avoid log explosions)
+        max_ts = 50
+        try:
+            max_ts = int(os.getenv("EVENT_TS_MAX", "50"))
+        except Exception:
+            max_ts = 50
+
+        def _print_ts_block(title: str, bucket: Dict[str, List[str]]) -> None:
+            print(f"\n--- TS: {title} (max {max_ts} per event) ---")
+            for name in sorted(bucket.keys()):
+                arr = bucket.get(name) or []
+                if not arr:
+                    continue
+                if len(arr) <= max_ts:
+                    preview = ", ".join(arr)
+                    print(f"{name}: [{preview}]")
+                else:
+                    preview = ", ".join(arr[:max_ts])
+                    more = len(arr) - max_ts
+                    print(f"{name}: [{preview}] ... (+{more} more)")
+
+        _print_ts_block("events_latest", self._event_ts_latest)
+        _print_ts_block("events_active", self._event_ts_active)
 
         print("\n--- BY TIMEFRAME: events_latest ---")
         for tf in sorted(self._event_by_tf_latest.keys(), key=lambda s: (len(s), s)):
