@@ -383,7 +383,7 @@ def evaluate_strategies(
         )
         if brt:
             strategies.append(brt)
-    except Exception as e:
-        print(f"[IndicatorBot] Error in BnR FVG strategy for {symbol} {timeframe}: {e}")
+    except Exception:
+        pass
 
     return strategies

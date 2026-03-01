@@ -437,7 +437,6 @@ class IndicatorBot:
             "strategies": strategies,
         }
         s = self._json(payload)
-        print(f"[INDICATORS][ONCE] {symbol} {tf} {asof.isoformat()} -> {s[:100]}")
 
     def _inc_event(self, bucket: Dict[str, int], name: str) -> None:
         bucket[name] = bucket.get(name, 0) + 1
@@ -516,74 +515,8 @@ class IndicatorBot:
                 self._last_seen_active_anchor_ts[name] = anchor_ts
 
     def print_event_summary(self) -> None:
-        """
-        Print final event counts:
-          - totals (latest + active)
-          - by timeframe
-          - by day (ET)
-        """
-        def _sorted_items(d: Dict[str, int]) -> List[Tuple[str, int]]:
-            return sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))
-
-        print("\n===== EVENT SUMMARY (FINAL) =====")
-
-        print("\n--- TOTAL: events_latest (occurrence counts) ---")
-        for name, cnt in _sorted_items(self._event_total_latest):
-            print(f"{name}: {cnt}")
-
-        print("\n--- TOTAL: events_active (occurrence counts) ---")
-        for name, cnt in _sorted_items(self._event_total_active):
-            print(f"{name}: {cnt}")
-
-        # Print candle timestamps for each event occurrence (bounded to avoid log explosions)
-        max_ts = 50
-        try:
-            max_ts = int(os.getenv("EVENT_TS_MAX", "50"))
-        except Exception:
-            max_ts = 50
-
-        def _print_ts_block(title: str, bucket: Dict[str, List[str]]) -> None:
-            print(f"\n--- TS: {title} (max {max_ts} per event) ---")
-            for name in sorted(bucket.keys()):
-                arr = bucket.get(name) or []
-                if not arr:
-                    continue
-                if len(arr) <= max_ts:
-                    preview = ", ".join(arr)
-                    print(f"{name}: [{preview}]")
-                else:
-                    preview = ", ".join(arr[:max_ts])
-                    more = len(arr) - max_ts
-                    print(f"{name}: [{preview}] ... (+{more} more)")
-
-        _print_ts_block("events_latest", self._event_ts_latest)
-        _print_ts_block("events_active", self._event_ts_active)
-
-        print("\n--- BY TIMEFRAME: events_latest ---")
-        for tf in sorted(self._event_by_tf_latest.keys(), key=lambda s: (len(s), s)):
-            print(f"\n[{tf}]")
-            for name, cnt in _sorted_items(self._event_by_tf_latest[tf]):
-                print(f"{name}: {cnt}")
-
-        print("\n--- BY TIMEFRAME: events_active ---")
-        for tf in sorted(self._event_by_tf_active.keys(), key=lambda s: (len(s), s)):
-            print(f"\n[{tf}]")
-            for name, cnt in _sorted_items(self._event_by_tf_active[tf]):
-                print(f"{name}: {cnt}")
-
-        print("\n--- BY DAY (ET): events_latest ---")
-        for day in sorted(self._event_by_day_latest.keys()):
-            print(f"\n[{day}]")
-            for name, cnt in _sorted_items(self._event_by_day_latest[day]):
-                print(f"{name}: {cnt}")
-
-        print("\n--- BY DAY (ET): events_active ---")
-        for day in sorted(self._event_by_day_active.keys()):
-            print(f"\n[{day}]")
-            for name, cnt in _sorted_items(self._event_by_day_active[day]):
-                print(f"{name}: {cnt}")
-
-        print("\n===== END EVENT SUMMARY =====\n")
+        """Event summary logging is intentionally disabled."""
+        return
 
     async def run(self) -> None:
         """
@@ -686,7 +619,7 @@ class IndicatorBot:
             try:
                 _enrich_vp_for_tf(current_tf=tf, current_snapshot=snapshot, snapshots_by_tf=snap_map)
             except Exception as e:
-                print(f"[VP][ENRICH] bootstrap failed for {symbol} {tf}: {e}")
+                pass
 
     async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
         """
@@ -770,11 +703,6 @@ class IndicatorBot:
         # ---------------- LIQUIDITY POOL DEBUG (ONCE) ----------------
         key_lp = (sym, tf)
         if liq_row and not self._logged_liqpool_once.get(key_lp):
-            try:
-                preview = self._json(liq_row)[:200]
-                print(f"[LIQ_POOL][ONCE] {sym} {tf} {ts_dt.isoformat()} -> {preview}")
-            except Exception:
-                print(f"[LIQ_POOL][ONCE] {sym} {tf} -> <unserializable>")
             self._logged_liqpool_once[key_lp] = True
 
         swing_items = (snapshot.get("swings") or {}).get("swings") or []
@@ -934,7 +862,7 @@ class IndicatorBot:
             try:
                 _enrich_vp_for_tf(current_tf=tf, current_snapshot=pack["snapshot"], snapshots_by_tf=snap_map)
             except Exception as e:
-                print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
+                pass
 
         # Update caches
         for tf, pack in pending.items():
@@ -1039,7 +967,3 @@ class IndicatorBot:
                 "events": self.last_events_state[sym_upper][tf],
             }
 
-            print(
-                f"[INDICATORS][SIM] Updated {sym_upper} {tf} "
-                f"(ts={ts_dt.isoformat()}, trend={trend.get('state')})"
-            )

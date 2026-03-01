@@ -262,10 +262,7 @@ async def _fetch_alpaca_bars(
         resp = await client.get(url, params=params, headers=headers, timeout=30.0)
 
         # Debug logging (trim later if noisy)
-        print(f"\n[DEBUG] Request URL: {resp.request.url}")
-        print(f"[DEBUG] Status: {resp.status_code}")
         text_preview = resp.text[:500]
-        print(f"[DEBUG] Raw response text (preview): {text_preview}")
 
         resp.raise_for_status()
         data = resp.json()
@@ -322,7 +319,6 @@ async def _fetch_alpaca_bars(
                     }
                 )
         else:
-            print("[WARN] Unexpected 'bars' shape from Alpaca:", type(raw_bars))
             break
 
         # Get next_page_token; if null/empty, we're done
