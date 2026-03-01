@@ -1,14 +1,7 @@
 import math
-from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Tuple
 
 import datetime as dt
-
-# ------------------------------------------------------------------
-# Diagnostics
-# ------------------------------------------------------------------
-_diag_call_count_by_tf = defaultdict(int)
-_diag_last5_candle_counts = defaultdict(lambda: deque(maxlen=5))
 
 def _parse_ts(ts):
     if not isinstance(ts, str):
@@ -2648,12 +2641,9 @@ def compute_structure_state(
 def compute_all_indicators(
     candles: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    tf = None
-    if candles and isinstance(candles, list):
+    if candles and isinstance(candles, list) and len(candles) > 0:
         tf = candles[-1].get("timeframe") or candles[-1].get("tf")
-
-    _diag_call_count_by_tf[tf] += 1
-    _diag_last5_candle_counts[tf].append(len(candles))
+        print(f"[CALC1][RECEIVED_LAST_CANDLE][tf={tf}] {candles[-1]}")
 
     trend = compute_trend(candles)
 
@@ -2751,4 +2741,3 @@ def compute_all_indicators(
         "extras": extras,
         "structure_state": structure_state,
     }
-
