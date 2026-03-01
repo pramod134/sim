@@ -360,6 +360,7 @@ class CandleEngine:
         symbol: str,
         ts_gte: Optional[str] = None,
         ts_lte: Optional[str] = None,
+        session_eq: Optional[str] = None,
         limit: int = 5000,
         order_asc: bool = True,
     ) -> List[Dict[str, Any]]:
@@ -386,6 +387,8 @@ class CandleEngine:
             base_params.append(("ts", f"gte.{ts_gte}"))
         if ts_lte:
             base_params.append(("ts", f"lte.{ts_lte}"))
+        if session_eq:
+            base_params.append(("session", f"eq.{session_eq}"))
 
         out: List[Dict[str, Any]] = []
         offset = 0
@@ -485,6 +488,9 @@ class CandleEngine:
         out: Dict[str, List[Dict[str, Any]]] = {}
         for tf, table in self._candle_tables.items():
             lim = int(counts.get(tf, 5000))
+            # Seed: only 1m table may include non-RTH rows; filter in DB so
+            # descending LIMIT yields the intended number of RTH candles.
+            session_eq = "rth" if tf == "1m" else None
             # IMPORTANT:
             # We want the seed to END at the cutoff (seed_date 16:00 ET) and go BACK in time.
             # So we fetch DESC (most recent first) with a LIMIT, then reverse to ASC in memory.
@@ -492,6 +498,7 @@ class CandleEngine:
                 table=table,
                 symbol=sym,
                 ts_lte=cutoff_utc,
+                session_eq=session_eq,
                 limit=lim,
                 order_asc=False,
             )
@@ -684,10 +691,11 @@ class CandleEngine:
                         cl = bucket_1m[-1]["close"]
                         v = sum(float(x.get("volume") or 0) for x in bucket_1m)
 
+                        # Timestamp convention for 1h candles is bucket START
+                        # (09:30, 10:30, ... 15:30 ET).
+                        bucket_start_utc = bucket_start_et.astimezone(dt.timezone.utc)
                         raw_1h = {
-                            # Keep timestamp convention consistent with existing aggregation:
-                            # use the last 1m candle ts within the bucket.
-                            "ts": bucket_1m[-1]["ts"],
+                            "ts": bucket_start_utc.isoformat(),
                             "open": o,
                             "high": h,
                             "low": l,
