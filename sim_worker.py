@@ -233,8 +233,13 @@ async def main() -> int:
             last_live_ts: Dict[str, str] = {}
 
             for d in sim_days:
+                # IMPORTANT: stream_day() now behaves like live:
+                # - reads ONLY 1m from DB
+                # - enriches 1m via CandleEngine._enrich_candle()
+                # - aggregates 3m/5m/15m/1h from 1m via _aggregate_from_1m()
+                # - emits closed candles for those HTFs
                 async for event in engine.stream_day(symbol=symbol, date_et=d):
-                    # event = {"tf": "1m"/"3m"/..., "candle": {...}}
+                    # event = {"tf": "1m"/"3m"/..., "candle": enriched {...}}
                     try:
                         tf = str(event.get("tf") or "")
                         c = event.get("candle") or {}
