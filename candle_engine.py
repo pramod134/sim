@@ -478,6 +478,9 @@ class CandleEngine:
             for r in rows:
                 raw = _norm_db_row(r)
                 e = self._enrich_candle(sym, tf, raw)
+                # Keep intraday seed candles aligned to RTH-only simulation.
+                if tf in ("1m", "3m", "5m", "15m", "1h") and e.get("session") != "rth":
+                    continue
                 enriched_rows.append(e)
                 self.candles[sym][tf].append(e)
 
@@ -535,8 +538,9 @@ class CandleEngine:
         """
         sym = symbol.upper()
         d = dt.date.fromisoformat(date_et)
-        start_et = dt.datetime(d.year, d.month, d.day, 4, 0, tzinfo=EASTERN)
-        end_et = dt.datetime(d.year, d.month, d.day, 20, 0, tzinfo=EASTERN)
+        # RTH-only simulation window.
+        start_et = dt.datetime(d.year, d.month, d.day, 9, 30, tzinfo=EASTERN)
+        end_et = dt.datetime(d.year, d.month, d.day, 16, 0, tzinfo=EASTERN)
         start_utc = start_et.astimezone(dt.timezone.utc).isoformat()
         end_utc = end_et.astimezone(dt.timezone.utc).isoformat()
 
@@ -599,6 +603,9 @@ class CandleEngine:
         for r in rows_1m:
             raw_1m = _norm_db_row(r)
             e_1m = self._enrich_candle(sym, "1m", raw_1m)
+            # Defensive filter in case non-RTH rows are returned in the ET range.
+            if e_1m.get("session") != "rth":
+                continue
             self.candles[sym]["1m"].append(e_1m)
             self.latest_ts[sym]["1m"] = dt.datetime.fromisoformat(e_1m["ts"])
 
