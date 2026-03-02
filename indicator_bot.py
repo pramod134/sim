@@ -674,6 +674,8 @@ class IndicatorBot:
         self._calc1_calls_by_tf: Dict[str, int] = {}
         self._calc2_calls_by_tf: Dict[str, int] = {}
         self._spot_event_calls_by_tf: Dict[str, int] = {}
+        self._liq_builder_calls_total: int = 0
+        self._last_spot_event_payload: Optional[Dict[str, Any]] = None
         self._first_10_received: List[Dict[str, Any]] = []
         self._last_asof: Dict[Tuple[str, str], str] = {}
         self._last_day_et_by_symbol: Dict[str, str] = {}
@@ -811,6 +813,8 @@ class IndicatorBot:
         print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
     def dump_diag_counts(self, symbol: str) -> None:
         """
@@ -823,6 +827,8 @@ class IndicatorBot:
         print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
 
 
@@ -1032,6 +1038,11 @@ class IndicatorBot:
                     prev_events_recent=prev_recent,
                 )
 
+                try:
+                    self._last_spot_event_payload = vars(ev_ctx)
+                except Exception:
+                    self._last_spot_event_payload = {"repr": repr(ev_ctx)}
+
                 ev_out = compute_spot_events(ev_ctx)
                 self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
@@ -1105,6 +1116,7 @@ class IndicatorBot:
                         }
                     )
 
+                self._liq_builder_calls_total += 1
                 pool = build_liquidity_pool(
                     symbol=sym_upper,
                     spot_tf_rows=spot_rows,
