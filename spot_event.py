@@ -90,8 +90,9 @@ _dbg_seen_counts: Dict[Tuple[str, str], int] = {}
 # ------------------------------------------------------------------
 _SPOT_EVENT_DETECTOR_CALL_COUNTS = defaultdict(int)
 _SPOT_EVENT_TRIGGER_COUNTS = defaultdict(int)
-_SPOT_EVENT_TRIGGER_TS = defaultdict(list)
+_SPOT_EVENT_TRIGGER_TS = defaultdict(list)  # event_key -> list[{"tf": str, "ts": Any}]
 _SPOT_EVENT_STRUCTURE_STATE_COUNTS = defaultdict(int)
+_SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF = defaultdict(int)  # "tf:state" -> count
 _SPOT_EVENT_LAST_STRUCTURE_STATE = None
 
 
@@ -100,6 +101,7 @@ def reset_spot_event_counters() -> None:
     _SPOT_EVENT_TRIGGER_COUNTS.clear()
     _SPOT_EVENT_TRIGGER_TS.clear()
     _SPOT_EVENT_STRUCTURE_STATE_COUNTS.clear()
+    _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.clear()
 
     global _SPOT_EVENT_LAST_STRUCTURE_STATE
     _SPOT_EVENT_LAST_STRUCTURE_STATE = None
@@ -114,6 +116,8 @@ def print_spot_event_counters() -> None:
     print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
     ordered_states = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS.items(), key=lambda kv: kv[0]))
     print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
+    ordered_states_tf = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.items(), key=lambda kv: kv[0]))
+    print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
     print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
 
 
@@ -1022,7 +1026,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
       }
     """
     symbol = ctx.symbol
-    timeframe = ctx.timeframe
+    timeframe = ctx.timeframe or ""
     last_candle = ctx.last_candle or {}
     ts = last_candle.get("ts")
 
@@ -1030,6 +1034,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     try:
         norm_state = _normalize_structure_state(ctx.structure_state)
         _SPOT_EVENT_STRUCTURE_STATE_COUNTS[norm_state or ""] += 1
+        _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF[f"{timeframe}:{norm_state or ''}"] += 1
         global _SPOT_EVENT_LAST_STRUCTURE_STATE
         _SPOT_EVENT_LAST_STRUCTURE_STATE = norm_state
     except Exception:
@@ -1287,7 +1292,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
             now = _is_triggered_value(v_now)
             if (not was) and now:
                 _SPOT_EVENT_TRIGGER_COUNTS[str(k)] += 1
-                _SPOT_EVENT_TRIGGER_TS[str(k)].append(ts)
+                _SPOT_EVENT_TRIGGER_TS[str(k)].append({"tf": timeframe, "ts": ts})
     except Exception:
         pass
 
