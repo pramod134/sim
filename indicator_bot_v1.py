@@ -25,6 +25,12 @@ from spot_event import SpotEventContext, compute_spot_events
 
 
 
+
+
+# Logging disabled outside sim_worker per repository policy.
+def print(*args, **kwargs):  # type: ignore[override]
+    return None
+
 EASTERN = ZoneInfo("America/New_York")
 
 

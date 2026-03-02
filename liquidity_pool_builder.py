@@ -3,6 +3,12 @@ import hashlib
 from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
+
+
+# Logging disabled outside sim_worker per repository policy.
+def print(*args, **kwargs):  # type: ignore[override]
+    return None
+
 # ------------------------------------------------------------------
 # Diagnostics
 # ------------------------------------------------------------------
