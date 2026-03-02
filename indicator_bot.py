@@ -869,8 +869,6 @@ class IndicatorBot:
             print_spot_event_counters()
         except Exception as e:
             print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
-        # Print ONLY the last data spot_event received (from the final call)
-        print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
     def dump_diag_counts(self, symbol: str) -> None:
         """
@@ -891,8 +889,6 @@ class IndicatorBot:
             print_spot_event_counters()
         except Exception as e:
             print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
-        # Print ONLY the last data spot_event received (from the final call)
-        print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
 
 

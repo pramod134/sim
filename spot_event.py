@@ -85,14 +85,24 @@ _dbg_seen_counts: Dict[Tuple[str, str], int] = {}
 # 1) How many times each detector function is CALLED (per compute_spot_events call)
 # 2) How many times each event is TRULY TRIGGERED on that candle
 #    (transition from "not triggered" -> "triggered" on this call)
+# 3) The candle timestamps (ts) where each event TRIGGERED
+# 4) What structure_state values spot_event is receiving (normalized)
 # ------------------------------------------------------------------
 _SPOT_EVENT_DETECTOR_CALL_COUNTS = defaultdict(int)
 _SPOT_EVENT_TRIGGER_COUNTS = defaultdict(int)
+_SPOT_EVENT_TRIGGER_TS = defaultdict(list)
+_SPOT_EVENT_STRUCTURE_STATE_COUNTS = defaultdict(int)
+_SPOT_EVENT_LAST_STRUCTURE_STATE = None
 
 
 def reset_spot_event_counters() -> None:
     _SPOT_EVENT_DETECTOR_CALL_COUNTS.clear()
     _SPOT_EVENT_TRIGGER_COUNTS.clear()
+    _SPOT_EVENT_TRIGGER_TS.clear()
+    _SPOT_EVENT_STRUCTURE_STATE_COUNTS.clear()
+
+    global _SPOT_EVENT_LAST_STRUCTURE_STATE
+    _SPOT_EVENT_LAST_STRUCTURE_STATE = None
 
 
 def print_spot_event_counters() -> None:
@@ -100,6 +110,11 @@ def print_spot_event_counters() -> None:
     ordered_trig = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
     print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
     print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
+    ordered_ts = dict(sorted(_SPOT_EVENT_TRIGGER_TS.items(), key=lambda kv: kv[0]))
+    print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
+    ordered_states = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS.items(), key=lambda kv: kv[0]))
+    print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
+    print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -1011,6 +1026,15 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     last_candle = ctx.last_candle or {}
     ts = last_candle.get("ts")
 
+    # ---------------- Diagnostics: structure_state input ----------------
+    try:
+        norm_state = _normalize_structure_state(ctx.structure_state)
+        _SPOT_EVENT_STRUCTURE_STATE_COUNTS[norm_state or ""] += 1
+        global _SPOT_EVENT_LAST_STRUCTURE_STATE
+        _SPOT_EVENT_LAST_STRUCTURE_STATE = norm_state
+    except Exception:
+        pass
+
     # Debug gating (first N candles per symbol+tf only)
     dbg_key = (symbol, timeframe)
     dbg_seen = _dbg_seen_counts.get(dbg_key, 0)
@@ -1263,6 +1287,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
             now = _is_triggered_value(v_now)
             if (not was) and now:
                 _SPOT_EVENT_TRIGGER_COUNTS[str(k)] += 1
+                _SPOT_EVENT_TRIGGER_TS[str(k)].append(ts)
     except Exception:
         pass
 
