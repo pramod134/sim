@@ -753,6 +753,53 @@ class IndicatorBot:
             except Exception:
                 pass
 
+        # ------------------------------------------------------------
+        # Build liquidity pool once from seed snapshots (like live bot)
+        # ------------------------------------------------------------
+        try:
+            spot_rows: List[Dict[str, Any]] = []
+            snap_by_tf = self.last_snapshots.get(sym, {}) or {}
+            for tf in self.timeframes:
+                snap = snap_by_tf.get(tf)
+                if not isinstance(snap, dict):
+                    continue
+                spot_rows.append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "asof": snap.get("asof"),
+                        "trend": snap.get("trend"),
+                        "pivots": snap.get("pivots"),
+                        "swings": snap.get("swings"),
+                        "structural": snap.get("structural"),
+                        "fvgs": snap.get("fvgs"),
+                        "liquidity": snap.get("liquidity"),
+                        "volume_profile": snap.get("volume_profile"),
+                        "extras": snap.get("extras"),
+                        "extras_advanced": snap.get("extras_advanced"),
+                        "structure_state": snap.get("structure_state"),
+                        "strategies": snap.get("strategies"),
+                    }
+                )
+
+            if spot_rows:
+                self._liq_builder_calls_total += 1
+                self._liq_builder_calls_by_tf["bootstrap"] = self._liq_builder_calls_by_tf.get("bootstrap", 0) + 1
+
+                pool = build_liquidity_pool(symbol=sym, spot_tf_rows=spot_rows, candle_engine=self.engine)
+                if isinstance(pool, dict):
+                    self.liq_pool_cache[sym] = {
+                        "symbol": sym,
+                        "asof": pool.get("asof"),
+                        "pool_version": pool.get("pool_version") or "liq_pool_v1",
+                        "levels": pool.get("levels") or [],
+                        "stats": pool.get("stats") or {},
+                        "tol_price": pool.get("tol_price"),
+                        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    }
+        except Exception as e:
+            print(f"[INDICATOR_BOT][DIAG] bootstrap liquidity pool build failed: {e}")
+
     async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
         """
         Simulation feed entrypoint called by sim_worker for each emitted candle.
@@ -816,6 +863,12 @@ class IndicatorBot:
         print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
         print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # Spot-event per-event trigger counters (printed by spot_event module)
+        try:
+            from spot_event import print_spot_event_counters  # local import to avoid cycles
+            print_spot_event_counters()
+        except Exception as e:
+            print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
         # Print ONLY the last data spot_event received (from the final call)
         print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
@@ -832,6 +885,12 @@ class IndicatorBot:
         print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
         print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # Spot-event per-event trigger counters (printed by spot_event module)
+        try:
+            from spot_event import print_spot_event_counters  # local import to avoid cycles
+            print_spot_event_counters()
+        except Exception as e:
+            print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
         # Print ONLY the last data spot_event received (from the final call)
         print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
@@ -1148,14 +1207,11 @@ class IndicatorBot:
 
     
                 if build_symbol_zone_map is not None:
-                    zone_map = build_symbol_zone_map(
+                    _ = build_symbol_zone_map(
                         symbol=sym_upper,
                         spot_tf_rows=spot_rows,
                         candle_engine=self.engine,
                     )
-                else:
-                    zone_map = None
-
                 # Simulation: NO DB writes (zone_finder). If zone_finder is not present, skip.
     
             except Exception as e:

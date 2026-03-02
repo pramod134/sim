@@ -28,6 +28,7 @@ events_active:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 import copy
 import json
@@ -77,6 +78,22 @@ SPOT_EVENT_FVG_SAMPLE = int(os.getenv("SPOT_EVENT_FVG_SAMPLE", "3") or "3")
 
 # Track how many debug blocks we've printed per (symbol, timeframe)
 _dbg_seen_counts: Dict[Tuple[str, str], int] = {}
+
+
+# ------------------------------------------------------------------
+# Diagnostics: count how many times each event is TRIGGERED
+# (i.e., appears non-null in events_latest for a compute_spot_events call).
+# ------------------------------------------------------------------
+_SPOT_EVENT_TRIGGER_COUNTS = defaultdict(int)
+
+
+def reset_spot_event_counters() -> None:
+    _SPOT_EVENT_TRIGGER_COUNTS.clear()
+
+
+def print_spot_event_counters() -> None:
+    ordered = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
+    print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered}")
 
 
 def _now_utc_iso() -> str:
@@ -1191,9 +1208,20 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
 
     changed = before_snapshot != after_snapshot
 
-    return {
+    out = {
         "events_latest": events_latest,
         "events_active": events_active,
         "events_recent": events_recent,
         "changed": changed,
     }
+
+    # ---------------- Diagnostics ----------------
+    # Count event triggers for this call (non-null in events_latest)
+    try:
+        for k, v in (events_latest or {}).items():
+            if v is not None:
+                _SPOT_EVENT_TRIGGER_COUNTS[str(k)] += 1
+    except Exception:
+        pass
+
+    return out
