@@ -94,6 +94,7 @@ _SPOT_EVENT_TRIGGER_TS = defaultdict(list)  # event_key -> list[{"tf": str, "ts"
 _SPOT_EVENT_STRUCTURE_STATE_COUNTS = defaultdict(int)
 _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF = defaultdict(int)  # "tf:state" -> count
 _SPOT_EVENT_LAST_STRUCTURE_STATE = None
+_SPOT_EVENT_CHOCH_BRANCH_SCANS = {"bullish_branch": 0, "bearish_branch": 0}
 
 
 def reset_spot_event_counters() -> None:
@@ -102,6 +103,8 @@ def reset_spot_event_counters() -> None:
     _SPOT_EVENT_TRIGGER_TS.clear()
     _SPOT_EVENT_STRUCTURE_STATE_COUNTS.clear()
     _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.clear()
+    _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] = 0
+    _SPOT_EVENT_CHOCH_BRANCH_SCANS["bearish_branch"] = 0
 
     global _SPOT_EVENT_LAST_STRUCTURE_STATE
     _SPOT_EVENT_LAST_STRUCTURE_STATE = None
@@ -119,6 +122,7 @@ def print_spot_event_counters() -> None:
     ordered_states_tf = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.items(), key=lambda kv: kv[0]))
     print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
     print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
+    print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -160,6 +164,11 @@ def _normalize_structure_state(structure_state: str) -> str:
     s = (structure_state or "").lower().strip()
     if not s:
         return ""
+    # Map richer "range BOS" labels to directional bias for CHOCH gating.
+    if "range_bos_up" in s:
+        return "bullish"
+    if "range_bos_down" in s:
+        return "bearish"
     if "bear" in s:
         return "bearish"
     if "bull" in s:
@@ -649,6 +658,8 @@ def detect_choch(
     lo_ref = _get_ref_level(swing_lows, ts)
 
     # CHOCH up only if currently bearish
+    if structure_state == "bearish":
+        _SPOT_EVENT_CHOCH_BRANCH_SCANS["bearish_branch"] += 1
     if structure_state == "bearish" and hi_ref and close > hi_ref["level"]:
         dist = close - hi_ref["level"]
         score = min(100.0, 65.0 + min(20.0, dist * 10.0) + min(10.0, max(0.0, vol_rel - 1.2) * 5.0))
@@ -666,6 +677,8 @@ def detect_choch(
         return "choch_up", score, meta
 
     # CHOCH down only if currently bullish
+    if structure_state == "bullish":
+        _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] += 1
     if structure_state == "bullish" and lo_ref and close < lo_ref["level"]:
         dist = lo_ref["level"] - close
         score = min(100.0, 65.0 + min(20.0, dist * 10.0) + min(10.0, max(0.0, vol_rel - 1.2) * 5.0))
