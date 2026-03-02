@@ -650,6 +650,12 @@ def detect_choch(
     spread_strength = _safe_float(last_candle.get("spread_strength"))
     structure_state = _normalize_structure_state(structure_state)
 
+    # Count branch scans immediately after normalization.
+    if structure_state == "bearish":
+        _SPOT_EVENT_CHOCH_BRANCH_SCANS["bearish_branch"] += 1
+    elif structure_state == "bullish":
+        _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] += 1
+
     # Strength filter: mom_atr>=0.8 OR vol_rel>=1.2
     if not ((mom_atr >= 0.8) or (vol_rel >= 1.2)):
         return None
@@ -658,8 +664,6 @@ def detect_choch(
     lo_ref = _get_ref_level(swing_lows, ts)
 
     # CHOCH up only if currently bearish
-    if structure_state == "bearish":
-        _SPOT_EVENT_CHOCH_BRANCH_SCANS["bearish_branch"] += 1
     if structure_state == "bearish" and hi_ref and close > hi_ref["level"]:
         dist = close - hi_ref["level"]
         score = min(100.0, 65.0 + min(20.0, dist * 10.0) + min(10.0, max(0.0, vol_rel - 1.2) * 5.0))
@@ -677,8 +681,6 @@ def detect_choch(
         return "choch_up", score, meta
 
     # CHOCH down only if currently bullish
-    if structure_state == "bullish":
-        _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] += 1
     if structure_state == "bullish" and lo_ref and close < lo_ref["level"]:
         dist = lo_ref["level"] - close
         score = min(100.0, 65.0 + min(20.0, dist * 10.0) + min(10.0, max(0.0, vol_rel - 1.2) * 5.0))
