@@ -635,6 +635,9 @@ class IndicatorBot:
         self,
         engine: CandleEngine,
         timeframes: Optional[List[str]] = None,
+        # NOTE: sim_worker passes sim_mode=True. We accept it for compatibility
+        # but this simulation IndicatorBot performs NO DB writes regardless.
+        sim_mode: bool = True,
     ):
         self.engine = engine
         self.timeframes = timeframes or list(SUPPORTED_TFS)
@@ -651,6 +654,163 @@ class IndicatorBot:
 
         # Liquidity pool cache per symbol (NEW)
         self.liq_pool_cache: Dict[str, Dict[str, Any]] = {}
+
+        # ---------------- SIM DIAGNOSTICS (no DB) ----------------
+        self._bootstrap_calls: int = 0
+        self._on_candle_total: int = 0
+        self._on_candle_by_tf: Dict[str, int] = {}
+        self._calc1_calls_by_tf: Dict[str, int] = {}
+        self._calc2_calls_by_tf: Dict[str, int] = {}
+        self._spot_event_calls_by_tf: Dict[str, int] = {}
+        self._first_10_received: List[Dict[str, Any]] = []
+        self._last_asof: Dict[Tuple[str, str], str] = {}
+        self._last_day_et_by_symbol: Dict[str, str] = {}
+
+    # ------------------------------------------------------------------ #
+    # Simulation entrypoints (sim_worker depends on these)
+    # ------------------------------------------------------------------ #
+
+    async def bootstrap(self, symbol: str, seed: Dict[str, Any]) -> None:
+        """
+        Simulation bootstrap.
+        sim_worker provides `seed` as { "1m":[...], "3m":[...], ... }.
+        We DO NOT write to DB. We just preload engine + caches so subsequent
+        on_candle() calls behave like live updates.
+        """
+        self._bootstrap_calls += 1
+        sym = (symbol or "").upper()
+        if not sym or not isinstance(seed, dict):
+            return
+
+        # Ensure engine has seed candles (CandleEngine may already have done this,
+        # but we keep it explicit for determinism).
+        self.engine.candles.setdefault(sym, {})
+        for tf, arr in seed.items():
+            if not isinstance(arr, list):
+                continue
+            self.engine.candles[sym][tf] = list(arr)
+
+        # Prime snapshots/last_processed_ts from seed, without DB.
+        self.last_processed_ts.setdefault(sym, {})
+        self.last_snapshots.setdefault(sym, {})
+        self.last_events_state.setdefault(sym, {})
+        self.last_fvgs_cache.setdefault(sym, {})
+
+        # Compute an initial snapshot per TF if we have enough candles.
+        for tf in self.timeframes:
+            candles = self.engine.candles.get(sym, {}).get(tf) or []
+            if len(candles) < 10:
+                continue
+            closed_candles = candles  # seed is assumed closed/ordered
+            last_candle = closed_candles[-1]
+            ts_dt = _ensure_dt(last_candle.get("ts"))
+
+            # Session candles (advanced extras)
+            session_date = last_candle.get("date_et")
+            if session_date:
+                session_candles = [c for c in closed_candles if c.get("date_et") == session_date]
+            else:
+                session_candles = closed_candles
+
+            snapshot = compute_all_indicators(closed_candles)
+            self._calc1_calls_by_tf[tf] = self._calc1_calls_by_tf.get(tf, 0) + 1
+
+            advanced = compute_advanced_extras(
+                candles=closed_candles,
+                base_snapshot=snapshot,
+                htf_snapshot=None,
+                session_candles=session_candles,
+            )
+            self._calc2_calls_by_tf[tf] = self._calc2_calls_by_tf.get(tf, 0) + 1
+
+            # Attach extras_advanced to the cached snapshot so downstream consumers
+            # see the same "row shape" we would have written to spot_tf.
+            snapshot["extras_advanced"] = advanced
+
+            self.last_snapshots[sym][tf] = snapshot
+            self.last_processed_ts[sym][tf] = ts_dt
+
+        # One-time multi-TF VP enrichment using the seeded snapshot map.
+        snap_map: Dict[str, Dict[str, Any]] = dict(self.last_snapshots.get(sym, {}))
+        for tf, snap in snap_map.items():
+            try:
+                _enrich_vp_for_tf(current_tf=tf, current_snapshot=snap, snapshots_by_tf=snap_map)
+            except Exception:
+                pass
+
+    async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
+        """
+        Simulation feed entrypoint called by sim_worker for each emitted candle.
+        We record diagnostics, then run the same update pipeline (no DB writes).
+        """
+        sym = (symbol or "").upper()
+        tf = str(timeframe or "")
+        if not sym or not tf or not isinstance(candle, dict):
+            return
+
+        # Deduplicate by asof/ts per (symbol, tf)
+        asof = candle.get("ts") or candle.get("asof")
+        key = (sym, tf)
+        if asof is not None:
+            s_asof = str(asof)
+            if self._last_asof.get(key) == s_asof:
+                return
+            self._last_asof[key] = s_asof
+
+        self._on_candle_total += 1
+        self._on_candle_by_tf[tf] = self._on_candle_by_tf.get(tf, 0) + 1
+
+        # Keep first 10 received candles (exactly what we got)
+        if len(self._first_10_received) < 10:
+            self._first_10_received.append(
+                {
+                    "tf": tf,
+                    "ts": candle.get("ts"),
+                    "ts_et": candle.get("ts_et"),
+                    "open": candle.get("open"),
+                    "high": candle.get("high"),
+                    "low": candle.get("low"),
+                    "close": candle.get("close"),
+                    "volume": candle.get("volume"),
+                    "session": candle.get("session"),
+                }
+            )
+            if len(self._first_10_received) == 10:
+                print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
+                for i, row in enumerate(self._first_10_received, start=1):
+                    print(f"[INDICATOR_BOT][DIAG] #{i}: {row}")
+
+        # Track day_et for summary
+        day_et = candle.get("date_et")
+        if day_et:
+            self._last_day_et_by_symbol[sym] = str(day_et)
+
+        # Run the standard update pipeline
+        await self._update_all_symbols()
+
+    def print_event_summary(self) -> None:
+        """
+        sim_worker expects this. Print a compact diagnostic summary.
+        """
+        for sym in sorted(self._last_day_et_by_symbol.keys() or []):
+            day_et = self._last_day_et_by_symbol.get(sym)
+            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+
+    def dump_diag_counts(self, symbol: str) -> None:
+        """
+        sim_worker expects this.
+        """
+        sym = (symbol or "").upper()
+        day_et = self._last_day_et_by_symbol.get(sym)
+        print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
 
 
 
@@ -689,11 +849,8 @@ class IndicatorBot:
             sym_upper = sym.upper()
             symbol_candles = self.engine.candles.get(sym_upper, {})
 
-            # Ensure we have liquidity pool row cached for sweep detection (NEW)
-            if sym_upper not in self.liq_pool_cache:
-                row = await fetch_spot_liquidity_pool_row(sym_upper)
-                if row:
-                    self.liq_pool_cache[sym_upper] = row
+            # Simulation: DO NOT fetch liquidity pool row from DB.
+            # We build/update liquidity pool from cached spot_rows below.
     
             # Collect all TF updates first so we can do multi-TF VP enrichment
             pending: Dict[str, Dict[str, Any]] = {}
@@ -723,7 +880,8 @@ class IndicatorBot:
                 ts_dt = _ensure_dt(last_candle.get("ts"))
     
                 prev_ts = self.last_processed_ts.get(sym_upper, {}).get(tf)
-                needs_backfill = await needs_backfill_structure_state(sym_upper, tf)
+                # Simulation: no DB; no backfill checks against spot_tf.
+                needs_backfill = False
     
                 if (not needs_backfill) and (prev_ts is not None) and (ts_dt <= prev_ts):
                     continue
@@ -737,6 +895,7 @@ class IndicatorBot:
     
                 # Base indicators (single pass)
                 snapshot = compute_all_indicators(closed_candles)
+                self._calc1_calls_by_tf[tf] = self._calc1_calls_by_tf.get(tf, 0) + 1
     
                 # Advanced extras (needs base_snapshot)
                 advanced = compute_advanced_extras(
@@ -745,6 +904,7 @@ class IndicatorBot:
                     htf_snapshot=None,
                     session_candles=session_candles,
                 )
+                self._calc2_calls_by_tf[tf] = self._calc2_calls_by_tf.get(tf, 0) + 1
     
                 pending[tf] = {
                     "closed_candles": closed_candles,
@@ -861,32 +1021,22 @@ class IndicatorBot:
                 )
 
                 ev_out = compute_spot_events(ev_ctx)
-    
-                await update_indicators_in_spot_tf(
-                    symbol=sym_upper,
-                    timeframe=tf,
-                    trend=trend,
-                    pivots=pivots,
-                    swings=swings,
-                    structural=structural,
-                    fvgs=fvgs,
-                    liquidity=liquidity,
-                    volume_profile=volume_profile,
-                    extras=extras,
-                    extras_advanced=extras_advanced,
-                    structure_state=structure_state,
-                    strategies=strategies,
-                )
+                self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
-                # Write spot_events only if changed (NEW)
-                if ev_out.get("changed"):
-                    await upsert_spot_events_row(
-                        symbol=sym_upper,
-                        timeframe=tf,
-                        events_latest=ev_out["events_latest"],
-                        events_active=ev_out["events_active"],
-                        events_recent=ev_out["events_recent"],
-                    )
+                # Attach extras_advanced + strategies to snapshot so cached "row shape"
+                # is what zone/liquidity builders expect (no DB writes).
+                try:
+                    snapshot["extras_advanced"] = extras_advanced
+                except Exception:
+                    pass
+                try:
+                    snapshot["strategies"] = strategies
+                except Exception:
+                    pass
+    
+                # Simulation: NO DB writes (spot_tf).
+
+                # Simulation: NO DB writes (spot_events).
 
                 # Update caches (NEW)
                 self.last_events_state.setdefault(sym_upper, {})[tf] = {
@@ -948,15 +1098,7 @@ class IndicatorBot:
                     spot_tf_rows=spot_rows,
                     candle_engine=self.engine,
                 )
-                await upsert_spot_liquidity_pool(
-                    symbol=sym_upper,
-                    asof=pool["asof"],
-                    pool_version=pool.get("pool_version") or "liq_pool_v1",
-                    levels=pool.get("levels") or [],
-                    stats=pool.get("stats") or {},
-                    tol_price=pool.get("tol_price"),
-                )
-                print(f"[LIQ_POOL] Updated spot_liquidity_pool for {sym_upper} (levels={len(pool.get('levels') or [])})")
+                # Simulation: NO DB writes (spot_liquidity_pool).
 
                 # Refresh liquidity pool cache from computed pool (NEW)
                 self.liq_pool_cache[sym_upper] = {
@@ -976,12 +1118,7 @@ class IndicatorBot:
                     candle_engine=self.engine,
                 )
     
-                await upsert_symbol_zone_map(
-                    zone_map=zone_map,
-                    table="zone_finder",
-                )
-    
-                print(f"[ZONE_FINDER] Updated zone_finder row for {sym_upper}")
+                # Simulation: NO DB writes (zone_finder).
     
             except Exception as e:
                 print(f"[ZONE_FINDER] Failed for {sym_upper}: {e}")
