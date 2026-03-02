@@ -34,9 +34,9 @@ from spot_event import SpotEventContext, compute_spot_events
 
 
 
-# Logging disabled outside sim_worker per repository policy.
-def print(*args, **kwargs):  # type: ignore[override]
-    return None
+# NOTE:
+# Do NOT override print() in the simulation indicator bot.
+# We rely on stdout logs for end-to-end validation.
 
 EASTERN = dt.timezone(dt.timedelta(hours=-5))  # not critical, mainly for consistency
 
@@ -675,6 +675,7 @@ class IndicatorBot:
         self._calc2_calls_by_tf: Dict[str, int] = {}
         self._spot_event_calls_by_tf: Dict[str, int] = {}
         self._liq_builder_calls_total: int = 0
+        self._liq_builder_calls_by_tf: Dict[str, int] = {}
         self._last_spot_event_payload: Optional[Dict[str, Any]] = None
         self._first_10_received: List[Dict[str, Any]] = []
         self._last_asof: Dict[Tuple[str, str], str] = {}
@@ -814,6 +815,8 @@ class IndicatorBot:
         print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # Print ONLY the last data spot_event received (from the final call)
         print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
     def dump_diag_counts(self, symbol: str) -> None:
@@ -828,6 +831,8 @@ class IndicatorBot:
         print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
         print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # Print ONLY the last data spot_event received (from the final call)
         print(f"[INDICATOR_BOT][DIAG] last_spot_event_payload={self._last_spot_event_payload}")
 
 
@@ -1038,9 +1043,11 @@ class IndicatorBot:
                     prev_events_recent=prev_recent,
                 )
 
+                # Capture ONLY the last payload sent into spot_event (print once at end)
                 try:
                     self._last_spot_event_payload = vars(ev_ctx)
                 except Exception:
+                    # Fallback: keep a minimal safe representation (still "what we sent")
                     self._last_spot_event_payload = {"repr": repr(ev_ctx)}
 
                 ev_out = compute_spot_events(ev_ctx)
@@ -1116,7 +1123,11 @@ class IndicatorBot:
                         }
                     )
 
+                # Count how many times liquidity builder is called
                 self._liq_builder_calls_total += 1
+                # Attribute this pool rebuild to TFs that updated in this cycle
+                for _tf in pending.keys():
+                    self._liq_builder_calls_by_tf[_tf] = self._liq_builder_calls_by_tf.get(_tf, 0) + 1
                 pool = build_liquidity_pool(
                     symbol=sym_upper,
                     spot_tf_rows=spot_rows,
