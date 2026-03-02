@@ -6,7 +6,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from zone_finder import build_symbol_zone_map, upsert_symbol_zone_map
+# Zone finder is optional in the simulation repo.
+# If zone_finder.py isn't present, run without it (no indicator logic changes).
+try:
+    from zone_finder import build_symbol_zone_map, upsert_symbol_zone_map  # type: ignore
+except Exception:
+    build_symbol_zone_map = None  # type: ignore
+    upsert_symbol_zone_map = None  # type: ignore
 
 from candle_engine import CandleEngine, SUPPORTED_TFS
 
@@ -1112,13 +1118,16 @@ class IndicatorBot:
                 }
 
     
-                zone_map = build_symbol_zone_map(
-                    symbol=sym_upper,
-                    spot_tf_rows=spot_rows,
-                    candle_engine=self.engine,
-                )
-    
-                # Simulation: NO DB writes (zone_finder).
+                if build_symbol_zone_map is not None:
+                    zone_map = build_symbol_zone_map(
+                        symbol=sym_upper,
+                        spot_tf_rows=spot_rows,
+                        candle_engine=self.engine,
+                    )
+                else:
+                    zone_map = None
+
+                # Simulation: NO DB writes (zone_finder). If zone_finder is not present, skip.
     
             except Exception as e:
                 print(f"[ZONE_FINDER] Failed for {sym_upper}: {e}")
