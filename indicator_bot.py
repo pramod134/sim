@@ -348,7 +348,9 @@ class IndicatorBot:
         timeframes: Optional[List[str]] = None,
         enable_zone_finder: bool = False,
         enable_liquidity_pool: bool = False,
-        sim_mode: bool = False,
+        # NOTE: sim_worker passes sim_mode=True. We accept it for compatibility
+        # and keep simulation behavior in-memory (no DB writes).
+        sim_mode: bool = True,
     ):
         self.engine = engine
         self.timeframes = timeframes or list(SUPPORTED_TFS)
@@ -378,6 +380,16 @@ class IndicatorBot:
         # Push-mode simulation helpers
         self._last_asof: Dict[Tuple[str, str], str] = {}
         self._sim_candles: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+
+        # ---------------- SIM DIAGNOSTICS (no DB) ----------------
+        self._bootstrap_calls: int = 0
+        self._on_candle_total: int = 0
+        self._on_candle_by_tf: Dict[str, int] = {}
+        self._calc1_calls_by_tf: Dict[str, int] = {}
+        self._calc2_calls_by_tf: Dict[str, int] = {}
+        self._spot_event_calls_by_tf: Dict[str, int] = {}
+        self._first_10_received: List[Dict[str, Any]] = []
+        self._last_day_et_by_symbol: Dict[str, str] = {}
 
         # Logging guards
         self._logged_indicators_once: Dict[Tuple[str, str], bool] = {}
@@ -414,10 +426,17 @@ class IndicatorBot:
         self._diag_liq_builder_calls_by_tf: Dict[str, int] = defaultdict(int)
 
     def dump_diag_counts(self, symbol: str = "") -> None:
-        """Print diagnostics once at end of simulation."""
-        prefix = f"[DIAG]{'[' + symbol + ']' if symbol else ''}"
-        print(f"{prefix} spot_event_calls_by_tf={dict(self._diag_spot_event_calls_by_tf)}")
-        print(f"{prefix} liq_builder_calls_by_tf={dict(self._diag_liq_builder_calls_by_tf)}")
+        """sim_worker compatibility diagnostics."""
+        sym = (symbol or "").upper()
+        day_et = self._last_day_et_by_symbol.get(sym) if sym else None
+        if sym:
+            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        print(f"[DIAG] spot_event_calls_by_tf={dict(self._diag_spot_event_calls_by_tf)}")
+        print(f"[DIAG] liq_builder_calls_by_tf={dict(self._diag_liq_builder_calls_by_tf)}")
 
     def _maybe_rebuild_liquidity_pool(self, *, symbol: str, trigger_tf: str) -> None:
         """Rebuild liquidity pool (if enabled) and count calls per trigger TF."""
@@ -556,8 +575,14 @@ class IndicatorBot:
                 self._last_seen_active_anchor_ts[name] = anchor_ts
 
     def print_event_summary(self) -> None:
-        """Event summary logging is intentionally disabled."""
-        return
+        """Print compact simulation diagnostic summary."""
+        for sym in sorted(self._last_day_et_by_symbol.keys()):
+            day_et = self._last_day_et_by_symbol.get(sym)
+            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
 
     async def run(self) -> None:
         """
@@ -603,6 +628,7 @@ class IndicatorBot:
         await self._bootstrap_from_seed_data(seed_data)
 
     async def _bootstrap_from_seed_data(self, seed_data: Dict[str, Any]) -> None:
+        self._bootstrap_calls += 1
         symbol = (seed_data.get("symbol") or "").upper()
         candles_by_tf: Dict[str, List[Dict[str, Any]]] = seed_data.get("candles") or {}
         if not symbol or not candles_by_tf:
@@ -633,6 +659,7 @@ class IndicatorBot:
                 session_candles = closed_candles
 
             snapshot = compute_all_indicators(closed_candles)
+            self._calc1_calls_by_tf[tf] = self._calc1_calls_by_tf.get(tf, 0) + 1
             # Diagnostics: bootstrap also calls calc1/calc2 (seed warmup)
             advanced = compute_advanced_extras(
                 candles=closed_candles,
@@ -640,6 +667,10 @@ class IndicatorBot:
                 htf_snapshot=None,
                 session_candles=session_candles,
             )
+            self._calc2_calls_by_tf[tf] = self._calc2_calls_by_tf.get(tf, 0) + 1
+
+            # Match simulated row shape used elsewhere.
+            snapshot["extras_advanced"] = advanced
 
             # Multi-TF VP enrichment map will be built after collecting all snapshots
             self.last_snapshots[symbol][tf] = snapshot
@@ -682,6 +713,32 @@ class IndicatorBot:
         if asof:
             self._last_asof[key] = str(asof)
 
+        self._on_candle_total += 1
+        self._on_candle_by_tf[tf] = self._on_candle_by_tf.get(tf, 0) + 1
+
+        if len(self._first_10_received) < 10:
+            self._first_10_received.append(
+                {
+                    "tf": tf,
+                    "ts": candle.get("ts"),
+                    "ts_et": candle.get("ts_et"),
+                    "open": candle.get("open"),
+                    "high": candle.get("high"),
+                    "low": candle.get("low"),
+                    "close": candle.get("close"),
+                    "volume": candle.get("volume"),
+                    "session": candle.get("session"),
+                }
+            )
+            if len(self._first_10_received) == 10:
+                print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
+                for i, row in enumerate(self._first_10_received, start=1):
+                    print(f"[INDICATOR_BOT][DIAG] #{i}: {row}")
+
+        day_et = candle.get("date_et")
+        if day_et:
+            self._last_day_et_by_symbol[sym] = str(day_et)
+
         candles = self._sim_candles.setdefault(key, [])
         candles.append(candle)
 
@@ -707,12 +764,15 @@ class IndicatorBot:
             session_candles = closed_candles
 
         snapshot = compute_all_indicators(closed_candles)
+        self._calc1_calls_by_tf[tf] = self._calc1_calls_by_tf.get(tf, 0) + 1
         advanced = compute_advanced_extras(
             candles=closed_candles,
             base_snapshot=snapshot,
             htf_snapshot=None,
             session_candles=session_candles,
         )
+        self._calc2_calls_by_tf[tf] = self._calc2_calls_by_tf.get(tf, 0) + 1
+        snapshot["extras_advanced"] = advanced
 
         self.last_snapshots.setdefault(sym, {})[tf] = snapshot
         ts_dt = _ensure_dt(last_candle.get("ts") or asof)
@@ -779,6 +839,7 @@ class IndicatorBot:
         )
         ev_out = compute_spot_events(ev_ctx)
         self._diag_spot_event_calls_by_tf[str(tf)] += 1
+        self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
         self.last_events_state.setdefault(sym, {})[tf] = {
             "events_latest": ev_out.get("events_latest"),
