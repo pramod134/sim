@@ -81,19 +81,48 @@ _dbg_seen_counts: Dict[Tuple[str, str], int] = {}
 
 
 # ------------------------------------------------------------------
-# Diagnostics: count how many times each event is TRIGGERED
-# (i.e., appears non-null in events_latest for a compute_spot_events call).
+# Diagnostics:
+# 1) How many times each detector function is CALLED (per compute_spot_events call)
+# 2) How many times each event is TRULY TRIGGERED on that candle
+#    (transition from "not triggered" -> "triggered" on this call)
 # ------------------------------------------------------------------
+_SPOT_EVENT_DETECTOR_CALL_COUNTS = defaultdict(int)
 _SPOT_EVENT_TRIGGER_COUNTS = defaultdict(int)
 
 
 def reset_spot_event_counters() -> None:
+    _SPOT_EVENT_DETECTOR_CALL_COUNTS.clear()
     _SPOT_EVENT_TRIGGER_COUNTS.clear()
 
 
 def print_spot_event_counters() -> None:
-    ordered = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered}")
+    ordered_calls = dict(sorted(_SPOT_EVENT_DETECTOR_CALL_COUNTS.items(), key=lambda kv: kv[0]))
+    ordered_trig = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
+    print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
+    print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
+
+
+def _is_triggered_value(v: Any) -> bool:
+    """
+    Decide whether an events_latest value represents a real trigger.
+    - None -> not triggered
+    - bool -> True triggers
+    - dict/list/tuple/set -> non-empty triggers
+    - str -> non-empty triggers
+    - numbers -> non-zero triggers
+    - other -> truthy triggers
+    """
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v is True
+    if isinstance(v, (dict, list, tuple, set)):
+        return len(v) > 0
+    if isinstance(v, str):
+        return v.strip() != ""
+    if isinstance(v, (int, float)):
+        return v != 0
+    return bool(v)
 
 
 def _now_utc_iso() -> str:
@@ -997,6 +1026,8 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     dbg_fvg_events: List[Dict[str, Any]] = []
 
     # Initialize from prev or defaults
+    # Keep existing state behavior (no logic changes here):
+    # events_latest starts from previous and is updated below.
     events_latest = copy.deepcopy(ctx.prev_events_latest) if ctx.prev_events_latest else init_events_latest()
     events_active = copy.deepcopy(ctx.prev_events_active) if ctx.prev_events_active else init_events_active()
     events_recent = copy.deepcopy(ctx.prev_events_recent) if ctx.prev_events_recent else init_events_recent()
@@ -1008,6 +1039,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     # -------------------------
     # 1) Displacement
     # -------------------------
+    _SPOT_EVENT_DETECTOR_CALL_COUNTS["detect_displacement"] += 1
     disp = detect_displacement(last_candle)
     displacement_fired = False
     if disp and ts:
@@ -1023,6 +1055,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     # -------------------------
     sweep = None
     if ts:
+        _SPOT_EVENT_DETECTOR_CALL_COUNTS["detect_liquidity_sweep"] += 1
         sweep = detect_liquidity_sweep(last_candle, ctx.liquidity_pool_row, events_recent, timeframe)
     if sweep and ts:
         et, score, meta, level_id = sweep
@@ -1038,6 +1071,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     structural_lows = ctx.structural_lows or []
     bos = None
     if ts:
+        _SPOT_EVENT_DETECTOR_CALL_COUNTS["detect_bos"] += 1
         bos = detect_bos(last_candle, structural_highs, structural_lows, displacement_fired)
 
     if bos and ts:
@@ -1100,6 +1134,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     swing_lows = ctx.swing_lows or []
     choch = None
     if ts:
+        _SPOT_EVENT_DETECTOR_CALL_COUNTS["detect_choch"] += 1
         choch = detect_choch(last_candle, swing_highs, swing_lows, ctx.structure_state)
 
     if choch and ts:
@@ -1176,6 +1211,7 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     # 6) FVG transition events (created/tapped/filled)
     # -------------------------
     if ts and ctx.fvgs_now is not None:
+        _SPOT_EVENT_DETECTOR_CALL_COUNTS["detect_fvg_transitions"] += 1
         fvg_events = detect_fvg_transitions(ctx.fvgs_now, ctx.fvgs_prev, ts, timeframe)
         dbg_fvg_events = fvg_events or []
         for ev in (fvg_events or []):
@@ -1216,10 +1252,16 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     }
 
     # ---------------- Diagnostics ----------------
-    # Count event triggers for this call (non-null in events_latest)
+    # Count TRUE triggers on this candle:
+    # increment only when an event transitions from "not triggered" -> "triggered"
+    # compared to the previous events_latest.
     try:
-        for k, v in (events_latest or {}).items():
-            if v is not None:
+        prev_latest = ctx.prev_events_latest if isinstance(ctx.prev_events_latest, dict) else {}
+        for k, v_now in (events_latest or {}).items():
+            v_prev = prev_latest.get(k)
+            was = _is_triggered_value(v_prev)
+            now = _is_triggered_value(v_now)
+            if (not was) and now:
                 _SPOT_EVENT_TRIGGER_COUNTS[str(k)] += 1
     except Exception:
         pass
