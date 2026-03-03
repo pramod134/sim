@@ -103,6 +103,18 @@ _SPOT_EVENT_CHOCH_DIAG = {
     "bearish_no_cross": 0,
 }
 
+# CHOCH accounting extras (log-only, no behavior change)
+_SPOT_EVENT_CHOCH_DIAG_EXTRA = {
+    "missing_last_candle": 0,
+    "missing_ts": 0,
+    "missing_close": 0,
+    "close_non_numeric_or_nan": 0,
+    "strength_failed_bullish_branch": 0,
+    "strength_failed_bearish_branch": 0,
+    "bullish_cross_true": 0,
+    "bearish_cross_true": 0,
+}
+
 
 def reset_spot_event_counters() -> None:
     _SPOT_EVENT_DETECTOR_CALL_COUNTS.clear()
@@ -114,6 +126,8 @@ def reset_spot_event_counters() -> None:
     _SPOT_EVENT_CHOCH_BRANCH_SCANS["bearish_branch"] = 0
     for k in _SPOT_EVENT_CHOCH_DIAG:
         _SPOT_EVENT_CHOCH_DIAG[k] = 0
+    for k in _SPOT_EVENT_CHOCH_DIAG_EXTRA:
+        _SPOT_EVENT_CHOCH_DIAG_EXTRA[k] = 0
 
     global _SPOT_EVENT_LAST_STRUCTURE_STATE
     _SPOT_EVENT_LAST_STRUCTURE_STATE = None
@@ -133,6 +147,7 @@ def print_spot_event_counters() -> None:
     print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
     print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
     print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
+    print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -653,7 +668,28 @@ def detect_choch(
     swing_lows: List[Dict[str, Any]],
     structure_state: str,
 ) -> Optional[Tuple[str, float, Dict[str, Any]]]:
+    if not last_candle:
+        _SPOT_EVENT_CHOCH_DIAG_EXTRA["missing_last_candle"] += 1
+        return None
+
     ts = last_candle.get("ts")
+    if ts is None:
+        _SPOT_EVENT_CHOCH_DIAG_EXTRA["missing_ts"] += 1
+
+    close_raw = last_candle.get("close")
+    if close_raw is None:
+        _SPOT_EVENT_CHOCH_DIAG_EXTRA["missing_close"] += 1
+
+    # Track non-numeric / NaN close (log-only). Do NOT alter logic.
+    if close_raw is not None:
+        try:
+            close_num = float(close_raw)
+            # NaN check: NaN != NaN
+            if close_num != close_num:
+                _SPOT_EVENT_CHOCH_DIAG_EXTRA["close_non_numeric_or_nan"] += 1
+        except Exception:
+            _SPOT_EVENT_CHOCH_DIAG_EXTRA["close_non_numeric_or_nan"] += 1
+
     close = _safe_float(last_candle.get("close"))
     mom_atr = _safe_float(last_candle.get("mom_atr"))
     vol_rel = _safe_float(last_candle.get("vol_rel"))
@@ -670,6 +706,10 @@ def detect_choch(
     strength_ok = (mom_atr >= 0.8) or (vol_rel >= 1.2)
     if not strength_ok:
         _SPOT_EVENT_CHOCH_DIAG["strength_failed"] += 1
+        if structure_state == "bullish":
+            _SPOT_EVENT_CHOCH_DIAG_EXTRA["strength_failed_bullish_branch"] += 1
+        elif structure_state == "bearish":
+            _SPOT_EVENT_CHOCH_DIAG_EXTRA["strength_failed_bearish_branch"] += 1
         return None
 
     hi_ref = _get_ref_level(swing_highs, ts)
@@ -678,6 +718,8 @@ def detect_choch(
     if structure_state == "bearish":
         if not hi_ref:
             _SPOT_EVENT_CHOCH_DIAG["bearish_no_ref"] += 1
+        elif close > hi_ref["level"]:
+            _SPOT_EVENT_CHOCH_DIAG_EXTRA["bearish_cross_true"] += 1
         elif close <= hi_ref["level"]:
             _SPOT_EVENT_CHOCH_DIAG["bearish_no_cross"] += 1
 
@@ -701,6 +743,8 @@ def detect_choch(
     if structure_state == "bullish":
         if not lo_ref:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
+        elif close < lo_ref["level"]:
+            _SPOT_EVENT_CHOCH_DIAG_EXTRA["bullish_cross_true"] += 1
         elif close >= lo_ref["level"]:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_cross"] += 1
 
