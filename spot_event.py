@@ -95,6 +95,13 @@ _SPOT_EVENT_STRUCTURE_STATE_COUNTS = defaultdict(int)
 _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF = defaultdict(int)  # "tf:state" -> count
 _SPOT_EVENT_LAST_STRUCTURE_STATE = None
 _SPOT_EVENT_CHOCH_BRANCH_SCANS = {"bullish_branch": 0, "bearish_branch": 0}
+_SPOT_EVENT_CHOCH_DIAG = {
+    "strength_failed": 0,
+    "bullish_no_ref": 0,
+    "bullish_no_cross": 0,
+    "bearish_no_ref": 0,
+    "bearish_no_cross": 0,
+}
 
 
 def reset_spot_event_counters() -> None:
@@ -105,6 +112,8 @@ def reset_spot_event_counters() -> None:
     _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.clear()
     _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] = 0
     _SPOT_EVENT_CHOCH_BRANCH_SCANS["bearish_branch"] = 0
+    for k in _SPOT_EVENT_CHOCH_DIAG:
+        _SPOT_EVENT_CHOCH_DIAG[k] = 0
 
     global _SPOT_EVENT_LAST_STRUCTURE_STATE
     _SPOT_EVENT_LAST_STRUCTURE_STATE = None
@@ -123,6 +132,7 @@ def print_spot_event_counters() -> None:
     print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
     print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
     print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
+    print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -657,11 +667,19 @@ def detect_choch(
         _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] += 1
 
     # Strength filter: mom_atr>=0.8 OR vol_rel>=1.2
-    if not ((mom_atr >= 0.8) or (vol_rel >= 1.2)):
+    strength_ok = (mom_atr >= 0.8) or (vol_rel >= 1.2)
+    if not strength_ok:
+        _SPOT_EVENT_CHOCH_DIAG["strength_failed"] += 1
         return None
 
     hi_ref = _get_ref_level(swing_highs, ts)
     lo_ref = _get_ref_level(swing_lows, ts)
+
+    if structure_state == "bearish":
+        if not hi_ref:
+            _SPOT_EVENT_CHOCH_DIAG["bearish_no_ref"] += 1
+        elif close <= hi_ref["level"]:
+            _SPOT_EVENT_CHOCH_DIAG["bearish_no_cross"] += 1
 
     # CHOCH up only if currently bearish
     if structure_state == "bearish" and hi_ref and close > hi_ref["level"]:
@@ -679,6 +697,12 @@ def detect_choch(
             "spread_strength": spread_strength,
         }
         return "choch_up", score, meta
+
+    if structure_state == "bullish":
+        if not lo_ref:
+            _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
+        elif close >= lo_ref["level"]:
+            _SPOT_EVENT_CHOCH_DIAG["bullish_no_cross"] += 1
 
     # CHOCH down only if currently bullish
     if structure_state == "bullish" and lo_ref and close < lo_ref["level"]:
