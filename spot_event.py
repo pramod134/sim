@@ -716,6 +716,12 @@ def detect_choch(
     lo_ref = _get_ref_level(swing_lows, ts)
 
     if structure_state == "bearish":
+        if hi_ref:
+            print(
+                f"[CHOCH_CHECK][UP] tf={last_candle.get('timeframe') or last_candle.get('tf')} "
+                f"candle_ts={ts} close={close} "
+                f"ref_level={hi_ref.get('level')} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')}"
+            )
         if not hi_ref:
             _SPOT_EVENT_CHOCH_DIAG["bearish_no_ref"] += 1
         elif close > hi_ref["level"]:
@@ -741,6 +747,12 @@ def detect_choch(
         return "choch_up", score, meta
 
     if structure_state == "bullish":
+        if lo_ref:
+            print(
+                f"[CHOCH_CHECK][DOWN] tf={last_candle.get('timeframe') or last_candle.get('tf')} "
+                f"candle_ts={ts} close={close} "
+                f"ref_level={lo_ref.get('level')} ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')}"
+            )
         if not lo_ref:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
         elif close < lo_ref["level"]:
