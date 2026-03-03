@@ -1135,10 +1135,11 @@ class IndicatorBot:
                 self.last_snapshots.setdefault(sym_upper, {})[tf] = snapshot
                 self.last_processed_ts.setdefault(sym_upper, {})[tf] = ts_dt
     
-                print(
-                    f"[INDICATORS] Updated {sym_upper} {tf} "
-                    f"(ts={ts_dt.isoformat()}, trend={trend.get('state')})"
-                )
+                # (log removed) was too noisy during simulation troubleshooting
+                # print(
+                #     f"[INDICATORS] Updated {sym_upper} {tf} "
+                #     f"(ts={ts_dt.isoformat()}, trend={trend.get('state')})"
+                # )
     
             # ---------------- ZONE FINDER (Option A: all TFs -> one symbol map) ----------------
             try:
