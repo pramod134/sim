@@ -754,6 +754,14 @@ def detect_choch(
                 f"candle_ts={ts} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')} "
                 f"close={close} ref_level={hi_ref.get('price') or hi_ref.get('level')}"
             )
+            print(
+                f"[CHOCH_COMPARE_UP] "
+                f"ts={ts} "
+                f"state={structure_state} "
+                f"close={close} "
+                f"ref_used={hi_ref.get('price') or hi_ref.get('level')} "
+                f"ref_ts={hi_ref.get('ts')}"
+            )
         if not hi_ref:
             _SPOT_EVENT_CHOCH_DIAG["bearish_no_ref"] += 1
         elif close > hi_ref["level"]:
@@ -792,6 +800,14 @@ def detect_choch(
                 f"H={high} L={low} C={close} "
                 f"ref_level={lo_ref.get('price') or lo_ref.get('level')} "
                 f"ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')}"
+            )
+            print(
+                f"[CHOCH_COMPARE_DOWN] "
+                f"ts={ts} "
+                f"state={structure_state} "
+                f"close={close} "
+                f"ref_used={lo_ref.get('price') or lo_ref.get('level')} "
+                f"ref_ts={lo_ref.get('ts')}"
             )
         if not lo_ref:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
