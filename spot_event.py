@@ -771,12 +771,17 @@ def detect_choch(
     if structure_state == "bullish":
         if lo_ref:
             candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
-            swing_tf = lo_ref.get("timeframe") or lo_ref.get("tf")
+            high = last_candle.get("high")
+            low = last_candle.get("low")
+            close = last_candle.get("close")
             print(
                 f"[CHOCH_CHECK][DOWN] "
-                f"candle_tf={candle_tf} swing_tf={swing_tf} "
-                f"candle_ts={ts} ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')} "
-                f"close={close} ref_level={lo_ref.get('price') or lo_ref.get('level')}"
+                f"tf={candle_tf} "
+                f"state={structure_state} "
+                f"candle_ts={ts} "
+                f"H={high} L={low} C={close} "
+                f"ref_level={lo_ref.get('price') or lo_ref.get('level')} "
+                f"ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')}"
             )
         if not lo_ref:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
