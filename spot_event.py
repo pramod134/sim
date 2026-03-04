@@ -720,7 +720,9 @@ def detect_choch(
         _SPOT_EVENT_CHOCH_BRANCH_SCANS["bullish_branch"] += 1
 
     # Strength filter: mom_atr>=0.8 OR vol_rel>=1.2
-    strength_ok = (mom_atr >= 0.8) or (vol_rel >= 1.2)
+    # DEBUG: temporarily disable strength filter
+    # strength_ok = (mom_atr >= 0.8) or (vol_rel >= 1.2)
+    strength_ok = True
     if not strength_ok:
         _SPOT_EVENT_CHOCH_DIAG["strength_failed"] += 1
         if structure_state == "bullish":
@@ -735,10 +737,10 @@ def detect_choch(
     if structure_state == "bearish":
         if hi_ref:
             candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
-            ref_tf = hi_ref.get("timeframe") or hi_ref.get("tf")
+            swing_tf = hi_ref.get("timeframe") or hi_ref.get("tf")
             print(
                 f"[CHOCH_CHECK][UP] "
-                f"candle_tf={candle_tf} ref_tf={ref_tf} "
+                f"candle_tf={candle_tf} swing_tf={swing_tf} "
                 f"candle_ts={ts} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')} "
                 f"close={close} ref_level={hi_ref.get('price') or hi_ref.get('level')}"
             )
@@ -769,10 +771,10 @@ def detect_choch(
     if structure_state == "bullish":
         if lo_ref:
             candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
-            ref_tf = lo_ref.get("timeframe") or lo_ref.get("tf")
+            swing_tf = lo_ref.get("timeframe") or lo_ref.get("tf")
             print(
                 f"[CHOCH_CHECK][DOWN] "
-                f"candle_tf={candle_tf} ref_tf={ref_tf} "
+                f"candle_tf={candle_tf} swing_tf={swing_tf} "
                 f"candle_ts={ts} ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')} "
                 f"close={close} ref_level={lo_ref.get('price') or lo_ref.get('level')}"
             )
