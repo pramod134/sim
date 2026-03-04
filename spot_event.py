@@ -1284,7 +1284,17 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     choch = None
     if ts:
         _SPOT_EVENT_DETECTOR_CALL_COUNTS["detect_choch"] += 1
-        choch = detect_choch(last_candle, swing_highs, swing_lows, ctx.structure_state)
+        # DEBUG: inject timeframe into last_candle for logging only (no detection logic change)
+        lc = last_candle
+        try:
+            if isinstance(last_candle, dict) and ctx.timeframe:
+                if not (last_candle.get("tf") or last_candle.get("timeframe")):
+                    lc = dict(last_candle)
+                    lc["tf"] = ctx.timeframe
+        except Exception:
+            lc = last_candle
+
+        choch = detect_choch(lc, swing_highs, swing_lows, ctx.structure_state)
 
     if choch and ts:
         et, score, meta = choch
