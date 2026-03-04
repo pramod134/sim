@@ -734,6 +734,16 @@ def detect_choch(
     hi_ref = _get_ref_level(swing_highs, ts)
     lo_ref = _get_ref_level(swing_lows, ts)
 
+    ref = lo_ref
+    if ref:
+        ref_price = ref.get("price") or ref.get("level")
+        print(
+            f"[CHOCH_REF_INTERNAL] ts={ts} "
+            f"close={close} "
+            f"ref_price_used={ref_price} "
+            f"ref_ts_used={ref.get('ts')}"
+        )
+
     if structure_state == "bearish":
         if hi_ref:
             candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
