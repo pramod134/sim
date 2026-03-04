@@ -668,6 +668,23 @@ def detect_choch(
     swing_lows: List[Dict[str, Any]],
     structure_state: str,
 ) -> Optional[Tuple[str, float, Dict[str, Any]]]:
+    # --- DEBUG: print latest swing refs being used ---
+    try:
+        last_highs = swing_highs[-3:]
+        last_lows = swing_lows[-3:]
+
+        print(
+            "[CHOCH_SWINGS] highs="
+            + str([(x.get("price") or x.get("level"), x.get("ts") or x.get("ts_ref")) for x in last_highs])
+        )
+
+        print(
+            "[CHOCH_SWINGS] lows="
+            + str([(x.get("price") or x.get("level"), x.get("ts") or x.get("ts_ref")) for x in last_lows])
+        )
+    except Exception:
+        pass
+
     if not last_candle:
         _SPOT_EVENT_CHOCH_DIAG_EXTRA["missing_last_candle"] += 1
         return None
@@ -717,10 +734,13 @@ def detect_choch(
 
     if structure_state == "bearish":
         if hi_ref:
+            candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
+            ref_tf = hi_ref.get("timeframe") or hi_ref.get("tf")
             print(
-                f"[CHOCH_CHECK][UP] tf={last_candle.get('timeframe') or last_candle.get('tf')} "
-                f"candle_ts={ts} close={close} "
-                f"ref_level={hi_ref.get('level')} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')}"
+                f"[CHOCH_CHECK][UP] "
+                f"candle_tf={candle_tf} ref_tf={ref_tf} "
+                f"candle_ts={ts} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')} "
+                f"close={close} ref_level={hi_ref.get('price') or hi_ref.get('level')}"
             )
         if not hi_ref:
             _SPOT_EVENT_CHOCH_DIAG["bearish_no_ref"] += 1
@@ -748,10 +768,13 @@ def detect_choch(
 
     if structure_state == "bullish":
         if lo_ref:
+            candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
+            ref_tf = lo_ref.get("timeframe") or lo_ref.get("tf")
             print(
-                f"[CHOCH_CHECK][DOWN] tf={last_candle.get('timeframe') or last_candle.get('tf')} "
-                f"candle_ts={ts} close={close} "
-                f"ref_level={lo_ref.get('level')} ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')}"
+                f"[CHOCH_CHECK][DOWN] "
+                f"candle_tf={candle_tf} ref_tf={ref_tf} "
+                f"candle_ts={ts} ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')} "
+                f"close={close} ref_level={lo_ref.get('price') or lo_ref.get('level')}"
             )
         if not lo_ref:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
