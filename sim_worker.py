@@ -165,7 +165,7 @@ async def main() -> int:
     async with httpx.AsyncClient() as client:
         job = await _claim_one_job(client)
         if not job:
-            print("[SIM_WORKER] No sim_ticker rows with start_sim='y'. Exiting.")
+            # print("[SIM_WORKER] No sim_ticker rows with start_sim='y'. Exiting.")
             return 0
 
         symbol = (job.get("symbol") or "").upper()
@@ -174,11 +174,11 @@ async def main() -> int:
 
         if not symbol or not seed_date or sim_period <= 0:
             msg = f"Invalid job fields: symbol={symbol!r} seed_date={seed_date!r} sim_period={sim_period!r}"
-            print(f"[SIM_WORKER] {msg}")
+            # print(f"[SIM_WORKER] {msg}")
             await _mark_error(client, symbol or "UNKNOWN", msg)
             return 1
 
-        print(f"[SIM_WORKER] Claimed job: symbol={symbol} seed_date={seed_date} sim_period={sim_period}")
+        # print(f"[SIM_WORKER] Claimed job: symbol={symbol} seed_date={seed_date} sim_period={sim_period}")
 
         try:
             # Candle engine reads candles from DB via Supabase REST (we’ll patch candle_engine next)
@@ -214,20 +214,20 @@ async def main() -> int:
                 except Exception:
                     return str(x)
 
-            print("[SIM][SEED] Seed candle stats (UTC):")
+            # print("[SIM][SEED] Seed candle stats (UTC):")
             for tf in sorted(seed_counts.keys(), key=lambda s: (len(s), s)):
                 arr = (seed or {}).get(tf) or []
                 n = len(arr)
                 if n == 0:
-                    print(f"[SIM][SEED] {symbol} {tf}: n=0")
+                    # print(f"[SIM][SEED] {symbol} {tf}: n=0")
                     continue
                 first_ts = _ts_str(arr[0].get("ts"))
                 last_ts = _ts_str(arr[-1].get("ts"))
-                print(f"[SIM][SEED] {symbol} {tf}: n={n} first_ts={first_ts} last_ts={last_ts}")
+                # print(f"[SIM][SEED] {symbol} {tf}: n={n} first_ts={first_ts} last_ts={last_ts}")
 
             # Run sim day-by-day starting next trading day 09:30 ET
             sim_days = await engine.get_sim_days(symbol=symbol, start_after_seed_date_et=seed_date, num_days=sim_period)
-            print(f"[SIM_WORKER] Sim days: {sim_days[:3]}{'...' if len(sim_days) > 3 else ''}")
+            # print(f"[SIM_WORKER] Sim days: {sim_days[:3]}{'...' if len(sim_days) > 3 else ''}")
 
             # ---------------- LIVE SIM LOGS ----------------
             first_live_ts: Dict[str, str] = {}
@@ -279,51 +279,57 @@ async def main() -> int:
 
                     await bot.on_candle(symbol=symbol, timeframe=tf, candle=candle)
 
-            print("[SIM][LIVE] Live sim candle range (UTC):")
+            # print("[SIM][LIVE] Live sim candle range (UTC):")
             for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
-                print(f"[SIM][LIVE] {symbol} {tf}: first_live_ts={first_live_ts.get(tf)} last_live_ts={last_live_ts.get(tf)}")
+                pass
+                # print(f"[SIM][LIVE] {symbol} {tf}: first_live_ts={first_live_ts.get(tf)} last_live_ts={last_live_ts.get(tf)}")
 
-            print(f"[SIM][LIVE] First live candle sent to bot: {first_live_to_bot}")
-            print(f"[SIM][LIVE] Last live candle sent to bot:  {last_live_to_bot}")
+            # print(f"[SIM][LIVE] First live candle sent to bot: {first_live_to_bot}")
+            # print(f"[SIM][LIVE] Last live candle sent to bot:  {last_live_to_bot}")
             # Compare with CandleEngine emitted stats
             try:
                 emit_counts = engine.get_live_emit_counts(symbol)
                 first_last = engine.get_live_first_last(symbol)
-                print(f"[SIM][ENGINE] Live emitted counts by tf: {emit_counts}")
-                print(f"[SIM][ENGINE] First emitted: {first_last.get('first')}")
-                print(f"[SIM][ENGINE] Last emitted:  {first_last.get('last')}")
+                # print(f"[SIM][ENGINE] Live emitted counts by tf: {emit_counts}")
+                # print(f"[SIM][ENGINE] First emitted: {first_last.get('first')}")
+                # print(f"[SIM][ENGINE] Last emitted:  {first_last.get('last')}")
             except Exception as e:
-                print(f"[SIM][ENGINE] Diagnostics read failed: {e}")
+                pass
+                # print(f"[SIM][ENGINE] Diagnostics read failed: {e}")
 
             # Print final event summary (totals + per timeframe + per day)
             try:
                 bot.print_event_summary()
             except Exception as e:
-                print(f"[SIM_WORKER] Failed to print event summary: {e}")
+                pass
+                # print(f"[SIM_WORKER] Failed to print event summary: {e}")
 
             # Print only end-of-run diagnostics counts
             try:
                 bot.dump_diag_counts(symbol)
             except Exception as e:
-                print(f"[SIM_WORKER] Failed to print diag counts: {e}")
+                pass
+                # print(f"[SIM_WORKER] Failed to print diag counts: {e}")
 
             # Print ONLY the last liquidity pool output (once per sim run)
             try:
                 print_last_liquidity_output()
             except Exception as e:
-                print(f"[SIM_WORKER] Failed to print final liquidity output: {e}")
+                pass
+                # print(f"[SIM_WORKER] Failed to print final liquidity output: {e}")
 
             await _mark_done(client, symbol)
-            print(f"[SIM_WORKER] DONE: {symbol}")
+            # print(f"[SIM_WORKER] DONE: {symbol}")
             return 0
 
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
-            print(f"[SIM_WORKER] ERROR: {msg}")
+            # print(f"[SIM_WORKER] ERROR: {msg}")
             try:
                 await _mark_error(client, symbol, msg)
             except Exception as e2:
-                print(f"[SIM_WORKER] Failed to mark error in DB: {e2}")
+                pass
+                # print(f"[SIM_WORKER] Failed to mark error in DB: {e2}")
             return 1
 
 

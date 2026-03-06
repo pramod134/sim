@@ -542,4 +542,4 @@ def get_last_liquidity_output():
 def print_last_liquidity_output() -> None:
     """Print only the final (most recent) liquidity pool output once."""
     global _LAST_LIQ_POOL_OUTPUT
-    print(f"[LIQ_POOL][FINAL_OUTPUT] {_LAST_LIQ_POOL_OUTPUT}")
+    # print(f"[LIQ_POOL][FINAL_OUTPUT] {_LAST_LIQ_POOL_OUTPUT}")

@@ -436,13 +436,14 @@ class IndicatorBot:
         sym = (symbol or "").upper()
         day_et = self._last_day_et_by_symbol.get(sym) if sym else None
         if sym:
-            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
-        print(f"[DIAG] spot_event_calls_by_tf={dict(self._diag_spot_event_calls_by_tf)}")
-        print(f"[DIAG] liq_builder_calls_by_tf={dict(self._diag_liq_builder_calls_by_tf)}")
+            pass
+            # print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        # print(f"[DIAG] spot_event_calls_by_tf={dict(self._diag_spot_event_calls_by_tf)}")
+        # print(f"[DIAG] liq_builder_calls_by_tf={dict(self._diag_liq_builder_calls_by_tf)}")
 
     def _maybe_rebuild_liquidity_pool(self, *, symbol: str, trigger_tf: str) -> None:
         """Rebuild liquidity pool (if enabled) and count calls per trigger TF."""
@@ -469,7 +470,8 @@ class IndicatorBot:
             self.liq_pool_cache[symbol] = pool
             self._diag_liq_builder_calls_by_tf[str(trigger_tf)] += 1
         except Exception as e:
-            print(f"[DIAG][LIQ_POOL] rebuild failed trigger_tf={trigger_tf} err={e}")
+            pass
+            # print(f"[DIAG][LIQ_POOL] rebuild failed trigger_tf={trigger_tf} err={e}")
 
     def _json(self, obj: Any) -> str:
         try:
@@ -584,11 +586,11 @@ class IndicatorBot:
         """Print compact simulation diagnostic summary."""
         for sym in sorted(self._last_day_et_by_symbol.keys()):
             day_et = self._last_day_et_by_symbol.get(sym)
-            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+            # print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
 
     async def run(self) -> None:
         """
@@ -737,9 +739,10 @@ class IndicatorBot:
                 }
             )
             if len(self._first_10_received) == 10:
-                print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
+                # print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
                 for i, row in enumerate(self._first_10_received, start=1):
-                    print(f"[INDICATOR_BOT][DIAG] #{i}: {row}")
+                    pass
+                    # print(f"[INDICATOR_BOT][DIAG] #{i}: {row}")
 
         day_et = candle.get("date_et")
         if day_et:

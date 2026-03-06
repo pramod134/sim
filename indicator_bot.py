@@ -76,7 +76,7 @@ async def update_indicators_in_spot_tf(
     )
 
     if not supabase_url or not supabase_key:
-        print("[INDICATORS][DB] Skipping update: Supabase env vars missing")
+        # print("[INDICATORS][DB] Skipping update: Supabase env vars missing")
         return
 
     endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_tf"
@@ -119,16 +119,18 @@ async def update_indicators_in_spot_tf(
                 headers=headers,
             )
             if resp.status_code >= 400:
-                print(
-                    f"[INDICATORS][DB] Failed to update indicators for "
-                    f"{symbol} {timeframe} (status={resp.status_code})"
-                )
-                print(f"[INDICATORS][DB] Response text: {resp.text}")
+                # print(
+                # f"[INDICATORS][DB] Failed to update indicators for "
+                # f"{symbol} {timeframe} (status={resp.status_code})"
+                # )
+                # print(f"[INDICATORS][DB] Response text: {resp.text}")
                 resp.raise_for_status()
         except httpx.HTTPError as e:
-            print(f"[INDICATORS][DB] HTTP error for {symbol} {timeframe}: {e}")
+            pass
+            # print(f"[INDICATORS][DB] HTTP error for {symbol} {timeframe}: {e}")
         except Exception as e:
-            print(f"[INDICATORS][DB] Unexpected error for {symbol} {timeframe}: {e}")
+            pass
+            # print(f"[INDICATORS][DB] Unexpected error for {symbol} {timeframe}: {e}")
 
 
 async def fetch_spot_tf_rows_for_symbol(symbol: str) -> List[Dict[str, Any]]:
@@ -178,7 +180,7 @@ async def upsert_spot_liquidity_pool(
     )
 
     if not supabase_url or not supabase_key:
-        print("[LIQ_POOL][DB] Skipping upsert: Supabase env vars missing")
+        # print("[LIQ_POOL][DB] Skipping upsert: Supabase env vars missing")
         return
 
     endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_liquidity_pool"
@@ -204,8 +206,8 @@ async def upsert_spot_liquidity_pool(
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(endpoint, json=payload, headers=headers)
         if resp.status_code >= 400:
-            print(f"[LIQ_POOL][DB] Upsert failed for {symbol} (status={resp.status_code})")
-            print(f"[LIQ_POOL][DB] Response text: {resp.text}")
+            # print(f"[LIQ_POOL][DB] Upsert failed for {symbol} (status={resp.status_code})")
+            # print(f"[LIQ_POOL][DB] Response text: {resp.text}")
             resp.raise_for_status()
 
 
@@ -264,7 +266,7 @@ async def upsert_spot_events_row(
     )
 
     if not supabase_url or not supabase_key:
-        print("[EVENTS][DB] Skipping upsert: Supabase env vars missing")
+        # print("[EVENTS][DB] Skipping upsert: Supabase env vars missing")
         return
 
     endpoint = f"{supabase_url.rstrip('/')}/rest/v1/spot_events"
@@ -288,8 +290,8 @@ async def upsert_spot_events_row(
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(endpoint, json=payload, headers=headers)
         if resp.status_code >= 400:
-            print(f"[EVENTS][DB] Upsert failed for {symbol} {timeframe} (status={resp.status_code})")
-            print(f"[EVENTS][DB] Response text: {resp.text}")
+            # print(f"[EVENTS][DB] Upsert failed for {symbol} {timeframe} (status={resp.status_code})")
+            # print(f"[EVENTS][DB] Response text: {resp.text}")
             resp.raise_for_status()
 
 
@@ -336,10 +338,10 @@ async def needs_backfill_structure_state(symbol: str, timeframe: str) -> bool:
             resp.raise_for_status()
             rows = resp.json() or []
         except Exception as e:
-            print(
-                f"[INDICATORS][DB] Failed to check structure_state for "
-                f"{symbol} {timeframe}: {e}"
-            )
+            # print(
+            # f"[INDICATORS][DB] Failed to check structure_state for "
+            # f"{symbol} {timeframe}: {e}"
+            # )
             return False
 
     if not rows:
@@ -798,7 +800,8 @@ class IndicatorBot:
                         "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                     }
         except Exception as e:
-            print(f"[INDICATOR_BOT][DIAG] bootstrap liquidity pool build failed: {e}")
+            pass
+            # print(f"[INDICATOR_BOT][DIAG] bootstrap liquidity pool build failed: {e}")
 
     async def on_candle(self, symbol: str, timeframe: str, candle: Dict[str, Any]) -> None:
         """
@@ -838,9 +841,10 @@ class IndicatorBot:
                 }
             )
             if len(self._first_10_received) == 10:
-                print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
+                # print("[INDICATOR_BOT][DIAG] First 10 candles received by on_candle:")
                 for i, row in enumerate(self._first_10_received, start=1):
-                    print(f"[INDICATOR_BOT][DIAG] #{i}: {row}")
+                    pass
+                    # print(f"[INDICATOR_BOT][DIAG] #{i}: {row}")
 
         # Track day_et for summary
         day_et = candle.get("date_et")
@@ -856,19 +860,20 @@ class IndicatorBot:
         """
         for sym in sorted(self._last_day_et_by_symbol.keys() or []):
             day_et = self._last_day_et_by_symbol.get(sym)
-            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+            # print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
         # Spot-event per-event trigger counters (printed by spot_event module)
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
             print_spot_event_counters()
         except Exception as e:
-            print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
+            pass
+            # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
 
     def dump_diag_counts(self, symbol: str) -> None:
         """
@@ -876,19 +881,20 @@ class IndicatorBot:
         """
         sym = (symbol or "").upper()
         day_et = self._last_day_et_by_symbol.get(sym)
-        print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
         # Spot-event per-event trigger counters (printed by spot_event module)
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
             print_spot_event_counters()
         except Exception as e:
-            print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
+            pass
+            # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
 
 
 
@@ -903,13 +909,14 @@ class IndicatorBot:
         Periodically scan all symbols/timeframes and update indicators
         whenever a new candle has appeared.
         """
-        print(f"[INDICATORS] Starting indicator bot (interval={interval_seconds}s)")
+        # print(f"[INDICATORS] Starting indicator bot (interval={interval_seconds}s)")
 
         while True:
             try:
                 await self._update_all_symbols()
             except Exception as e:
-                print(f"[INDICATORS] Exception in run_loop: {e}")
+                pass
+                # print(f"[INDICATORS] Exception in run_loop: {e}")
             await asyncio.sleep(interval_seconds)
 
     # ------------------------------------------------------------------ #
@@ -920,7 +927,7 @@ class IndicatorBot:
     async def _update_all_symbols(self) -> None:
         symbols = getattr(self.engine, "symbols", [])
         if not symbols:
-            print("[INDICATORS] No symbols in engine yet, skipping cycle")
+            # print("[INDICATORS] No symbols in engine yet, skipping cycle")
             return
     
         for sym in symbols:
@@ -1011,7 +1018,8 @@ class IndicatorBot:
                         snapshots_by_tf=snap_map,
                     )
                 except Exception as e:
-                    print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
+                    pass
+                    # print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
     
             # Now write to DB (and update caches)
             for tf, pack in pending.items():
@@ -1212,4 +1220,5 @@ class IndicatorBot:
                 # Simulation: NO DB writes (zone_finder). If zone_finder is not present, skip.
     
             except Exception as e:
-                print(f"[ZONE_FINDER] Failed for {sym_upper}: {e}")
+                pass
+                # print(f"[ZONE_FINDER] Failed for {sym_upper}: {e}")
