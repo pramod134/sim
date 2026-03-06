@@ -136,18 +136,18 @@ def reset_spot_event_counters() -> None:
 def print_spot_event_counters() -> None:
     ordered_calls = dict(sorted(_SPOT_EVENT_DETECTOR_CALL_COUNTS.items(), key=lambda kv: kv[0]))
     ordered_trig = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
-    print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
+    # print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
+    # print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
     ordered_ts = dict(sorted(_SPOT_EVENT_TRIGGER_TS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
+    # print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
     ordered_states = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
+    # print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
     ordered_states_tf = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
-    print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
-    print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
-    print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
-    print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
+    # print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
+    # print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
+    # print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
+    # print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
+    # print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -673,15 +673,15 @@ def detect_choch(
         last_highs = swing_highs[-3:]
         last_lows = swing_lows[-3:]
 
-        print(
-            "[CHOCH_SWINGS] highs="
-            + str([(x.get("price") or x.get("level"), x.get("ts") or x.get("ts_ref")) for x in last_highs])
-        )
+        # print(
+        # "[CHOCH_SWINGS] highs="
+        # + str([(x.get("price") or x.get("level"), x.get("ts") or x.get("ts_ref")) for x in last_highs])
+        # )
 
-        print(
-            "[CHOCH_SWINGS] lows="
-            + str([(x.get("price") or x.get("level"), x.get("ts") or x.get("ts_ref")) for x in last_lows])
-        )
+        # print(
+        # "[CHOCH_SWINGS] lows="
+        # + str([(x.get("price") or x.get("level"), x.get("ts") or x.get("ts_ref")) for x in last_lows])
+        # )
     except Exception:
         pass
 
@@ -737,31 +737,31 @@ def detect_choch(
     ref = lo_ref
     if ref:
         ref_price = ref.get("price") or ref.get("level")
-        print(
-            f"[CHOCH_REF_INTERNAL] ts={ts} "
-            f"close={close} "
-            f"ref_price_used={ref_price} "
-            f"ref_ts_used={ref.get('ts')}"
-        )
+        # print(
+        # f"[CHOCH_REF_INTERNAL] ts={ts} "
+        # f"close={close} "
+        # f"ref_price_used={ref_price} "
+        # f"ref_ts_used={ref.get('ts')}"
+        # )
 
     if structure_state == "bearish":
         if hi_ref:
             candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
             swing_tf = hi_ref.get("timeframe") or hi_ref.get("tf")
-            print(
-                f"[CHOCH_CHECK][UP] "
-                f"candle_tf={candle_tf} swing_tf={swing_tf} "
-                f"candle_ts={ts} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')} "
-                f"close={close} ref_level={hi_ref.get('price') or hi_ref.get('level')}"
-            )
-            print(
-                f"[CHOCH_COMPARE_UP] "
-                f"ts={ts} "
-                f"state={structure_state} "
-                f"close={close} "
-                f"ref_used={hi_ref.get('price') or hi_ref.get('level')} "
-                f"ref_ts={hi_ref.get('ts')}"
-            )
+            # print(
+            # f"[CHOCH_CHECK][UP] "
+            # f"candle_tf={candle_tf} swing_tf={swing_tf} "
+            # f"candle_ts={ts} ref_ts={hi_ref.get('ts') or hi_ref.get('ts_ref')} "
+            # f"close={close} ref_level={hi_ref.get('price') or hi_ref.get('level')}"
+            # )
+            # print(
+            # f"[CHOCH_COMPARE_UP] "
+            # f"ts={ts} "
+            # f"state={structure_state} "
+            # f"close={close} "
+            # f"ref_used={hi_ref.get('price') or hi_ref.get('level')} "
+            # f"ref_ts={hi_ref.get('ts')}"
+            # )
         if not hi_ref:
             _SPOT_EVENT_CHOCH_DIAG["bearish_no_ref"] += 1
         elif close > hi_ref["level"]:
@@ -792,23 +792,23 @@ def detect_choch(
             high = last_candle.get("high")
             low = last_candle.get("low")
             close = last_candle.get("close")
-            print(
-                f"[CHOCH_CHECK][DOWN] "
-                f"tf={candle_tf} "
-                f"state={structure_state} "
-                f"candle_ts={ts} "
-                f"H={high} L={low} C={close} "
-                f"ref_level={lo_ref.get('price') or lo_ref.get('level')} "
-                f"ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')}"
-            )
-            print(
-                f"[CHOCH_COMPARE_DOWN] "
-                f"ts={ts} "
-                f"state={structure_state} "
-                f"close={close} "
-                f"ref_used={lo_ref.get('price') or lo_ref.get('level')} "
-                f"ref_ts={lo_ref.get('ts')}"
-            )
+            # print(
+            # f"[CHOCH_CHECK][DOWN] "
+            # f"tf={candle_tf} "
+            # f"state={structure_state} "
+            # f"candle_ts={ts} "
+            # f"H={high} L={low} C={close} "
+            # f"ref_level={lo_ref.get('price') or lo_ref.get('level')} "
+            # f"ref_ts={lo_ref.get('ts') or lo_ref.get('ts_ref')}"
+            # )
+            # print(
+            # f"[CHOCH_COMPARE_DOWN] "
+            # f"ts={ts} "
+            # f"state={structure_state} "
+            # f"close={close} "
+            # f"ref_used={lo_ref.get('price') or lo_ref.get('level')} "
+            # f"ref_ts={lo_ref.get('ts')}"
+            # )
         if not lo_ref:
             _SPOT_EVENT_CHOCH_DIAG["bullish_no_ref"] += 1
         elif close < lo_ref["level"]:
