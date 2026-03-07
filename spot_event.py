@@ -734,6 +734,32 @@ def detect_choch(
     hi_ref = _get_ref_level(swing_highs, ts)
     lo_ref = _get_ref_level(swing_lows, ts)
 
+    # Log-only CHOCH diagnostic print
+    candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
+    candle_high = last_candle.get("high")
+    candle_low = last_candle.get("low")
+    ref_level = None
+    break_condition = None
+    close_minus_ref = None
+
+    if structure_state == "bearish":
+        if hi_ref:
+            ref_level = hi_ref.get("price") or hi_ref.get("level")
+        if close is not None and ref_level is not None:
+            break_condition = close > ref_level
+            close_minus_ref = close - ref_level
+    elif structure_state == "bullish":
+        if lo_ref:
+            ref_level = lo_ref.get("price") or lo_ref.get("level")
+        if close is not None and ref_level is not None:
+            break_condition = close < ref_level
+            close_minus_ref = close - ref_level
+
+    print(
+        f"{ts},{candle_tf},{structure_state},{candle_high},{candle_low},"
+        f"{close},{ref_level},{break_condition},{close_minus_ref}"
+    )
+
     ref = lo_ref
     if ref:
         ref_price = ref.get("price") or ref.get("level")

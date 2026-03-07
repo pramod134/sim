@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import datetime as dt
 
+_LAST_PRINTED_SWING: Optional[Tuple[str, str, float]] = None
+
 def _parse_ts(ts):
     if not isinstance(ts, str):
         return None
@@ -1481,6 +1483,33 @@ def compute_swings_from_pivots(
 
     if max_swings and len(swings) > max_swings:
         swings = swings[-max_swings:]
+
+    # ------------------------------------------------------------
+    # LOG ONLY: print newest swing detected (live simulation only)
+    # ------------------------------------------------------------
+    global _LAST_PRINTED_SWING
+
+    asof_ts = pivots_obj.get("asof")
+
+    if swings and isinstance(asof_ts, str):
+        newest = swings[-1]
+
+        swing_ts = newest.get("ts")
+        swing_type = newest.get("type")
+        swing_price = newest.get("price")
+
+        # Same UTC date as current asof -> treat as live simulation, not seed
+        if (
+            isinstance(swing_ts, str)
+            and swing_ts[:10] == asof_ts[:10]
+            and swing_type in ("swing_high", "swing_low")
+            and swing_price is not None
+        ):
+            swing_key = (swing_ts, swing_type, float(swing_price))
+
+            if _LAST_PRINTED_SWING != swing_key:
+                print(f"LIVE_SWING,{swing_ts},{swing_type},{swing_price}")
+                _LAST_PRINTED_SWING = swing_key
 
     return {
         "asof": pivots_obj.get("asof"),
