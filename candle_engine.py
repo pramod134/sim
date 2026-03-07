@@ -1057,6 +1057,7 @@ class CandleEngine:
         enriched = dict(raw)
         enriched.update({
             "ts": ts.isoformat(),
+            "tf": timeframe,
             "ts_et": ts_et.isoformat(),
             "date_et": ts_et.date().isoformat(),
             "time_et": ts_et.strftime("%H:%M:%S"),

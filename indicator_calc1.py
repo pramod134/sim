@@ -156,6 +156,7 @@ def _mini_candle(c: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         return None
     return {
         "ts": c.get("ts"),
+        "tf": c.get("tf") or c.get("timeframe"),
         "ts_et": c.get("ts_et"),
         "date_et": c.get("date_et"),
         "time_et": c.get("time_et"),
@@ -1351,6 +1352,7 @@ def compute_pivots_len1(
     if len(candles) < 3:
         return {
             "asof": candles[-1].get("ts") if candles else None,
+            "tf": (candles[-1].get("tf") or candles[-1].get("timeframe")) if candles else None,
             "pivot_len": 1,
             "lookback": len(candles),
             "max_pivots": max_pivots,
@@ -1412,6 +1414,7 @@ def compute_pivots_len1(
         pivots.append(
             {
                 "ts": candles[i].get("ts"),
+                "tf": candles[i].get("tf") or candles[i].get("timeframe"),
                 "type": pivot_type,
                 "price": pivot_price,
                 "candle": _mini_candle(candles[i]),
@@ -1439,6 +1442,7 @@ def compute_pivots_len1(
 
     return {
         "asof": candles[-1].get("ts"),
+        "tf": candles[-1].get("tf") or candles[-1].get("timeframe"),
         "pivot_len": 1,
         "lookback": len(candles),
         "max_pivots": max_pivots,
@@ -1475,6 +1479,7 @@ def compute_swings_from_pivots(
         swings.append(
             {
                 "ts": p["ts"],
+                "tf": p.get("tf") or (p.get("candle") or {}).get("tf"),
                 "type": "swing_high" if p["type"] == "pivot_high" else "swing_low",
                 "price": p["price"],
                 "pivot": p,   # ← FULL inheritance
@@ -1487,6 +1492,7 @@ def compute_swings_from_pivots(
 
     return {
         "asof": pivots_obj.get("asof"),
+        "tf": pivots_obj.get("tf"),
         "lookback_pivots": len(pivots),
         "max_swings": max_swings,
         "swings": swings,
@@ -1521,6 +1527,7 @@ def compute_structural_from_swings(
         points.append(
             {
                 "ts": s["ts"],
+                "tf": s.get("tf") or (s.get("pivot") or {}).get("tf") or ((s.get("pivot") or {}).get("candle") or {}).get("tf"),
                 "type": s["type"],
                 "price": s["price"],
                 "label": label,
@@ -1537,11 +1544,13 @@ def compute_structural_from_swings(
     global _LAST_PRINTED_LIVE_POINT
 
     asof_ts = swings_obj.get("asof")
+    tf = swings_obj.get("tf")
 
     if points and isinstance(asof_ts, str):
         newest = points[-1]
 
         point_ts = newest.get("ts")
+        point_tf = newest.get("tf") or tf
         point_type = newest.get("type")
         point_price = newest.get("price")
         point_label = newest.get("label")
@@ -1552,17 +1561,18 @@ def compute_structural_from_swings(
             and point_type in ("swing_high", "swing_low")
             and point_price is not None
         ):
-            point_key = (point_ts, point_type, float(point_price), point_label)
+            point_key = (str(point_tf), point_ts, point_type, float(point_price), point_label)
 
             if _LAST_PRINTED_LIVE_POINT != point_key:
                 print(
-                    f"LIVE_SWING ts={point_ts}, type={point_type}, "
+                    f"LIVE_SWING tf={point_tf}, ts={point_ts}, type={point_type}, "
                     f"price={point_price}, label={point_label}"
                 )
                 _LAST_PRINTED_LIVE_POINT = point_key
 
     return {
         "asof": swings_obj.get("asof"),
+        "tf": swings_obj.get("tf"),
         "max_points": max_points,
         "points": points,
     }
