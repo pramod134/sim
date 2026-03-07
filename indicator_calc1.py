@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import datetime as dt
 
-_LAST_PRINTED_SWING: Optional[Tuple[str, str, float]] = None
+_LAST_PRINTED_LIVE_POINT: Optional[Tuple[str, str, str, float, Optional[str]]] = None
 
 def _parse_ts(ts):
     if not isinstance(ts, str):
@@ -1484,32 +1484,6 @@ def compute_swings_from_pivots(
     if max_swings and len(swings) > max_swings:
         swings = swings[-max_swings:]
 
-    # ------------------------------------------------------------
-    # LOG ONLY: print newest swing detected (live simulation only)
-    # ------------------------------------------------------------
-    global _LAST_PRINTED_SWING
-
-    asof_ts = pivots_obj.get("asof")
-
-    if swings and isinstance(asof_ts, str):
-        newest = swings[-1]
-
-        swing_ts = newest.get("ts")
-        swing_type = newest.get("type")
-        swing_price = newest.get("price")
-
-        # Same UTC date as current asof -> treat as live simulation, not seed
-        if (
-            isinstance(swing_ts, str)
-            and swing_ts[:10] == asof_ts[:10]
-            and swing_type in ("swing_high", "swing_low")
-            and swing_price is not None
-        ):
-            swing_key = (swing_ts, swing_type, float(swing_price))
-
-            if _LAST_PRINTED_SWING != swing_key:
-                print(f"LIVE_SWING,{swing_ts},{swing_type},{swing_price}")
-                _LAST_PRINTED_SWING = swing_key
 
     return {
         "asof": pivots_obj.get("asof"),
@@ -1556,6 +1530,36 @@ def compute_structural_from_swings(
 
     if max_points and len(points) > max_points:
         points = points[-max_points:]
+
+    # ------------------------------------------------------------
+    # LOG ONLY: print newest labeled swing detected (live only)
+    # ------------------------------------------------------------
+    global _LAST_PRINTED_LIVE_POINT
+
+    asof_ts = swings_obj.get("asof")
+
+    if points and isinstance(asof_ts, str):
+        newest = points[-1]
+
+        point_ts = newest.get("ts")
+        point_type = newest.get("type")
+        point_price = newest.get("price")
+        point_label = newest.get("label")
+
+        if (
+            isinstance(point_ts, str)
+            and point_ts[:10] == asof_ts[:10]
+            and point_type in ("swing_high", "swing_low")
+            and point_price is not None
+        ):
+            point_key = (point_ts, point_type, float(point_price), point_label)
+
+            if _LAST_PRINTED_LIVE_POINT != point_key:
+                print(
+                    f"LIVE_SWING ts={point_ts}, type={point_type}, "
+                    f"price={point_price}, label={point_label}"
+                )
+                _LAST_PRINTED_LIVE_POINT = point_key
 
     return {
         "asof": swings_obj.get("asof"),
