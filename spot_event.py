@@ -402,6 +402,7 @@ def _make_event(event_type: str, ts: str, timeframe: str, score: float, meta: Di
 def detect_displacement(last_candle: Dict[str, Any]) -> Optional[Tuple[str, float, Dict[str, Any]]]:
     direction = (last_candle.get("direction") or "").lower()  # "bull" / "bear"
     mom_atr = _safe_float(last_candle.get("mom_atr"))
+    mom_atr_mag = abs(mom_atr)
     vol_rel = _safe_float(last_candle.get("vol_rel"))
     spread_strength = _safe_float(last_candle.get("spread_strength"))
     cluster = last_candle.get("cluster") or {}
@@ -414,7 +415,9 @@ def detect_displacement(last_candle: Dict[str, Any]) -> Optional[Tuple[str, floa
     if cluster_state == "chop":
         mom_req = 1.15
 
-    if mom_atr < mom_req:
+    # mom_atr is signed (negative on down moves), but displacement strength
+    # gating should be based on magnitude for both bull and bear impulses.
+    if mom_atr_mag < mom_req:
         return None
     if spread_strength < 0.60:
         return None
@@ -423,12 +426,13 @@ def detect_displacement(last_candle: Dict[str, Any]) -> Optional[Tuple[str, floa
 
     # Simple score shaping (deterministic, not critical)
     score = 60.0
-    score += min(20.0, (mom_atr - mom_req) * 20.0)
+    score += min(20.0, (mom_atr_mag - mom_req) * 20.0)
     score += min(10.0, max(0.0, vol_rel - 1.5) * 3.0)
     score += min(10.0, max(0.0, spread_strength - 0.60) * 50.0)
 
     meta = {
         "mom_atr": mom_atr,
+        "mom_atr_mag": mom_atr_mag,
         "vol_rel": vol_rel,
         "spread_strength": spread_strength,
         "body": _safe_float(last_candle.get("body")),
