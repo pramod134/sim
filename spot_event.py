@@ -30,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
+import atexit
 import copy
 import json
 import math
@@ -78,6 +79,26 @@ SPOT_EVENT_FVG_SAMPLE = int(os.getenv("SPOT_EVENT_FVG_SAMPLE", "3") or "3")
 
 # Track how many debug blocks we've printed per (symbol, timeframe)
 _dbg_seen_counts: Dict[Tuple[str, str], int] = {}
+
+# Debug storage: print exactly what spot_event receives
+# once at first call, and once at process exit for the last snapshot of each tf.
+_SWINGS_SIM_FIRST_PRINTED = False
+_SWINGS_SIM_LAST: Dict[str, Dict[str, Any]] = {}
+
+
+def _print_swings_sim_end() -> None:
+    try:
+        print("[SWINGS_SIM_END]")
+        for tf, data in sorted(_SWINGS_SIM_LAST.items()):
+            print("timeframe:", tf)
+            print("ts:", data.get("ts"))
+            print("swing_highs:", data.get("swing_highs"))
+            print("swing_lows:", data.get("swing_lows"))
+    except Exception:
+        pass
+
+
+atexit.register(_print_swings_sim_end)
 
 
 # ------------------------------------------------------------------
@@ -1253,10 +1274,20 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         "changed": bool
       }
     """
+    global _SWINGS_SIM_FIRST_PRINTED, _SWINGS_SIM_LAST
+
     symbol = ctx.symbol
     timeframe = ctx.timeframe or ""
     last_candle = ctx.last_candle or {}
     ts = last_candle.get("ts")
+
+    if not _SWINGS_SIM_FIRST_PRINTED:
+        _SWINGS_SIM_FIRST_PRINTED = True
+        print("[SWINGS_SIM_START]")
+        print("timeframe:", timeframe)
+        print("ts:", ts)
+        print("swing_highs:", ctx.swing_highs)
+        print("swing_lows:", ctx.swing_lows)
 
     # ---------------- Diagnostics: structure_state input ----------------
     try:
@@ -1516,6 +1547,12 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
         "events_active": events_active,
         "events_recent": events_recent,
         "changed": changed,
+    }
+
+    _SWINGS_SIM_LAST[timeframe] = {
+        "ts": ts,
+        "swing_highs": ctx.swing_highs,
+        "swing_lows": ctx.swing_lows,
     }
 
     # ---------------- Diagnostics ----------------
