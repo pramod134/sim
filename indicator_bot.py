@@ -682,6 +682,8 @@ class IndicatorBot:
         self._first_10_received: List[Dict[str, Any]] = []
         self._last_asof: Dict[Tuple[str, str], str] = {}
         self._last_day_et_by_symbol: Dict[str, str] = {}
+        self._diag_cycle_count: int = 0
+        self._event_counter_log_every: int = max(0, int(os.getenv("EVENT_COUNTER_LOG_EVERY", "1") or "1"))
 
     # ------------------------------------------------------------------ #
     # Simulation entrypoints (sim_worker depends on these)
@@ -914,10 +916,42 @@ class IndicatorBot:
         while True:
             try:
                 await self._update_all_symbols()
+                self._maybe_log_event_counters()
             except Exception as e:
                 pass
                 # print(f"[INDICATORS] Exception in run_loop: {e}")
             await asyncio.sleep(interval_seconds)
+
+    def _maybe_log_event_counters(self) -> None:
+        """
+        Runtime printing for spot-event counters.
+        Controlled by env var EVENT_COUNTER_LOG_EVERY:
+          0 = disabled
+          1 = print every cycle
+          N = print every N cycles
+        """
+        every = self._event_counter_log_every
+        if every <= 0:
+            return
+
+        self._diag_cycle_count += 1
+        if (self._diag_cycle_count % every) != 0:
+            return
+
+        print(f"[INDICATOR_BOT][DIAG] cycle={self._diag_cycle_count}")
+        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+
+        try:
+            from spot_event import print_spot_event_counters  # local import to avoid cycles
+
+            print_spot_event_counters()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Core update logic
