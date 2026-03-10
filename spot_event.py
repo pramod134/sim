@@ -755,9 +755,37 @@ def detect_choch(
     lo_ref = _get_ref_level(swing_lows, ts)
 
     # ------------------------------------------------------------
-    # LOG ONLY: CHOCH diagnostic print
+    # DEBUG (5m only): reference + swing diagnostics
     # ------------------------------------------------------------
     candle_tf = last_candle.get("timeframe") or last_candle.get("tf")
+
+    if candle_tf == "5m":
+        try:
+            current_ref_high = hi_ref.get("level") if hi_ref else None
+            current_ref_low = lo_ref.get("level") if lo_ref else None
+
+            latest_swing_high = swing_highs[-1].get("level") if swing_highs else None
+            latest_swing_low = swing_lows[-1].get("level") if swing_lows else None
+
+            last3_highs = [x.get("level") for x in swing_highs[-3:]] if swing_highs else []
+            last3_lows = [x.get("level") for x in swing_lows[-3:]] if swing_lows else []
+
+            print(
+                f"[5M_SWING_DEBUG] "
+                f"ts={ts} "
+                f"CURRENT_REF_HIGH={current_ref_high} "
+                f"CURRENT_REF_LOW={current_ref_low} "
+                f"LATEST_SWING_HIGH={latest_swing_high} "
+                f"LATEST_SWING_LOW={latest_swing_low} "
+                f"LAST_3_SWING_HIGHS={last3_highs} "
+                f"LAST_3_SWING_LOWS={last3_lows}"
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------
+    # LOG ONLY: CHOCH diagnostic print
+    # ------------------------------------------------------------
     candle_high = last_candle.get("high")
     candle_low = last_candle.get("low")
     ref_level = None
