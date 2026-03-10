@@ -1102,12 +1102,12 @@ class IndicatorBot:
                 swing_highs = [
                     {"ts": s.get("ts"), "price": s.get("price")}
                     for s in swing_items
-                    if s.get("type") == "swing_high" and s.get("state") == "active"
+                    if s.get("type") == "swing_high" # and s.get("state") == "active"
                 ]
                 swing_lows = [
                     {"ts": s.get("ts"), "price": s.get("price")}
                     for s in swing_items
-                    if s.get("type") == "swing_low" and s.get("state") == "active"
+                    if s.get("type") == "swing_low" # and s.get("state") == "active"
                 ]
 
                 # structural: {"asof":..., "points":[{ts,type,label,price,...}, ...]}
