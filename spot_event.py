@@ -173,6 +173,22 @@ def _is_triggered_value(v: Any) -> bool:
     return bool(v)
 
 
+def _trigger_signature(v: Any) -> str:
+    """
+    Stable signature for trigger payloads.
+
+    Why:
+    events_latest values are often "sticky" (remain truthy after the first trigger),
+    so a plain False->True transition counter only increments once per TF.
+    We treat a trigger as *new* when its payload signature changes
+    (e.g., newer ts/event_id/meta), while still keeping the first False->True case.
+    """
+    try:
+        return json.dumps(v, sort_keys=True, default=str)
+    except Exception:
+        return str(v)
+
+
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1471,16 +1487,19 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
     }
 
     # ---------------- Diagnostics ----------------
-    # Count TRUE triggers on this candle:
-    # increment only when an event transitions from "not triggered" -> "triggered"
-    # compared to the previous events_latest.
+    # Count TRUE triggers on this candle.
+    # Increment when either:
+    # 1) event transitions "not triggered" -> "triggered", OR
+    # 2) event stays triggered but payload changes (new event instance).
     try:
         prev_latest = ctx.prev_events_latest if isinstance(ctx.prev_events_latest, dict) else {}
         for k, v_now in (events_latest or {}).items():
             v_prev = prev_latest.get(k)
             was = _is_triggered_value(v_prev)
             now = _is_triggered_value(v_now)
-            if (not was) and now:
+            if not now:
+                continue
+            if (not was) or (_trigger_signature(v_prev) != _trigger_signature(v_now)):
                 _SPOT_EVENT_TRIGGER_COUNTS[str(k)] += 1
                 _SPOT_EVENT_TRIGGER_TS[str(k)].append({"tf": timeframe, "ts": ts})
     except Exception:
