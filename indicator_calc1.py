@@ -2640,19 +2640,61 @@ def compute_structure_state(
     structural: Dict[str, Any],
     liquidity: Dict[str, Any],
 ) -> Optional[str]:
-    trend_state = trend.get("state") or "unknown"
+    """
+    Multi-factor structure state used by the strategy layer.
+
+    Design goals:
+    - Prefer event-time ordering over string ordering when possible.
+    - Separate continuation (BOS with trend) from reversal (CHoCH-style mismatch).
+    - Use recent swing labels to confirm directional intent.
+    """
+
+    def _latest_ts(ts_values: List[Any]) -> Optional[dt.datetime]:
+        parsed = [_parse_ts(v) for v in ts_values if isinstance(v, str)]
+        parsed = [p for p in parsed if p is not None]
+        if not parsed:
+            return None
+        return max(parsed)
+
+    trend_state_raw = str(trend.get("state") or "unknown").strip().lower()
+    trend_state_alias = {
+        "bull": "bullish",
+        "bullish": "bullish",
+        "bear": "bearish",
+        "bearish": "bearish",
+        "range": "range",
+        "neutral": "range",
+        "unknown": "unknown",
+    }
+    trend_state = trend_state_alias.get(trend_state_raw, trend_state_raw or "unknown")
+
     points = structural.get("points") or []
-    recent_labels = {p.get("label") for p in points[-4:]} if points else set()
+    recent_points = points[-6:] if points else []
+    recent_labels = {p.get("label") for p in recent_points}
+
+    bullish_score = 0
+    bearish_score = 0
+    for lbl in [p.get("label") for p in recent_points]:
+        if lbl in {"HH", "HL"}:
+            bullish_score += 1
+        elif lbl in {"LH", "LL"}:
+            bearish_score += 1
+
+    structure_bias = "neutral"
+    if bullish_score > bearish_score:
+        structure_bias = "bullish"
+    elif bearish_score > bullish_score:
+        structure_bias = "bearish"
 
     # BOS side derived from the most recent broken swing level (close-based break)
     bos_side: Optional[str] = None
-    last_up_ts: Optional[str] = None
-    last_down_ts: Optional[str] = None
+    last_up_ts: Optional[dt.datetime] = None
+    last_down_ts: Optional[dt.datetime] = None
 
     for lvl in (liquidity or {}).get("levels") or []:
         ltype = lvl.get("type")
-        ts = lvl.get("last_break_ts")
-        if not isinstance(ts, str):
+        ts = _latest_ts([lvl.get("last_break_ts"), lvl.get("broken_ts"), lvl.get("last_event_ts")])
+        if ts is None:
             continue
         if ltype == "swing_high":
             if last_up_ts is None or ts > last_up_ts:
@@ -2666,18 +2708,28 @@ def compute_structure_state(
     elif last_down_ts and (not last_up_ts or last_down_ts > last_up_ts):
         bos_side = "down"
 
-    if trend_state == "bull" and ({"HH", "HL"} & recent_labels):
-        base = "bull_trend_HH_HL"
-    elif trend_state == "bear" and ({"LH", "LL"} & recent_labels):
-        base = "bear_trend_LH_LL"
-    else:
-        base = trend_state
+    trend_dir = trend_state if trend_state in {"bullish", "bearish"} else "neutral"
+    bos_dir = "bullish" if bos_side == "up" else "bearish" if bos_side == "down" else "neutral"
 
-    if bos_side == "up":
-        return f"{base}_bos_up"
-    if bos_side == "down":
-        return f"{base}_bos_down"
-    return base
+    # Continuation vs CHoCH/reversal framing (closer to discretionary trader language)
+    if trend_dir in {"bullish", "bearish"} and bos_dir == trend_dir and structure_bias == trend_dir:
+        return f"{trend_state}_continuation_bos"
+
+    if trend_dir in {"bullish", "bearish"} and bos_dir in {"bullish", "bearish"} and bos_dir != trend_dir:
+        if structure_bias == bos_dir:
+            return f"{trend_state}_choch_confirmed"
+        return f"{trend_state}_choch_early"
+
+    if trend_dir in {"bullish", "bearish"} and structure_bias == trend_dir and bos_dir == "neutral":
+        return f"{trend_state}_trend_intact"
+
+    if structure_bias in {"bullish", "bearish"} and trend_dir == "neutral":
+        return f"{structure_bias}_structure_building"
+
+    if recent_labels and {"HH", "HL", "LH", "LL"}.issuperset(recent_labels):
+        return "range_or_transition"
+
+    return trend_state
 
 
 
