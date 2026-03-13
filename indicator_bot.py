@@ -686,6 +686,7 @@ class IndicatorBot:
         self._diag_cycle_count: int = 0
         self._event_counter_log_every: int = max(0, int(os.getenv("EVENT_COUNTER_LOG_EVERY", "1") or "1"))
         self._sim_strategy_results: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._sim_strategy_trade_log_cursor: Dict[str, Dict[str, int]] = {}
 
     # ------------------------------------------------------------------ #
     # Simulation entrypoints (sim_worker depends on these)
@@ -864,17 +865,17 @@ class IndicatorBot:
         """
         for sym in sorted(self._last_day_et_by_symbol.keys() or []):
             day_et = self._last_day_et_by_symbol.get(sym)
-            print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+            # print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
         # Spot-event per-event trigger counters (printed by spot_event module)
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
-            print_spot_event_counters()
+            # print_spot_event_counters()
         except Exception as e:
             pass
             # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
@@ -885,17 +886,17 @@ class IndicatorBot:
         """
         sym = (symbol or "").upper()
         day_et = self._last_day_et_by_symbol.get(sym)
-        print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] Summary for {sym} day_et={day_et}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
         # Spot-event per-event trigger counters (printed by spot_event module)
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
-            print_spot_event_counters()
+            # print_spot_event_counters()
         except Exception as e:
             pass
             # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
@@ -940,18 +941,18 @@ class IndicatorBot:
         if (self._diag_cycle_count % every) != 0:
             return
 
-        print(f"[INDICATOR_BOT][DIAG] cycle={self._diag_cycle_count}")
-        print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
-        print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] cycle={self._diag_cycle_count}")
+        # print(f"[INDICATOR_BOT][DIAG] on_candle_total={self._on_candle_total} on_candle_by_tf={self._on_candle_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc1_calls_by_tf={self._calc1_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] calc2_calls_by_tf={self._calc2_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] spot_event_calls_by_tf={self._spot_event_calls_by_tf}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_total={self._liq_builder_calls_total}")
+        # print(f"[INDICATOR_BOT][DIAG] liquidity_builder_calls_by_tf={self._liq_builder_calls_by_tf}")
 
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
 
-            print_spot_event_counters()
+            # print_spot_event_counters()
         except Exception:
             pass
 
@@ -1173,6 +1174,29 @@ class IndicatorBot:
                         )
                     sim_strategy_result = run_strategy(sim_input)
                     self._sim_strategy_results.setdefault(sym_upper, {})[tf] = sim_strategy_result
+
+                    trade_log = sim_strategy_result.get("trade_log") if isinstance(sim_strategy_result, dict) else None
+                    if isinstance(trade_log, list):
+                        tf_cursor_map = self._sim_strategy_trade_log_cursor.setdefault(sym_upper, {})
+                        prev_count = int(tf_cursor_map.get(tf, 0) or 0)
+                        if prev_count < 0:
+                            prev_count = 0
+                        if prev_count > len(trade_log):
+                            prev_count = 0
+
+                        new_trades = trade_log[prev_count:]
+                        for t in new_trades:
+                            if not isinstance(t, dict):
+                                continue
+                            print(
+                                "[STRATEGY][TRADE] "
+                                f"symbol={sym_upper} tf={tf} "
+                                f"entry_ts={t.get('entry_fill_timestamp')} entry_px={t.get('entry_price')} "
+                                f"exit_ts={t.get('exit_timestamp')} exit_px={t.get('exit_price')}"
+                            )
+
+                        tf_cursor_map[tf] = len(trade_log)
+
                     try:
                         perf = sim_strategy_result.get("performance") if isinstance(sim_strategy_result, dict) else {}
                         print(
