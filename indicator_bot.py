@@ -23,6 +23,7 @@ from indicator_calc2 import compute_advanced_extras
 
 
 from strategies import evaluate_strategies
+from strategy import run_strategy
 
 from liquidity_pool_builder import build_liquidity_pool
 
@@ -684,6 +685,7 @@ class IndicatorBot:
         self._last_day_et_by_symbol: Dict[str, str] = {}
         self._diag_cycle_count: int = 0
         self._event_counter_log_every: int = max(0, int(os.getenv("EVENT_COUNTER_LOG_EVERY", "1") or "1"))
+        self._sim_strategy_results: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ #
     # Simulation entrypoints (sim_worker depends on these)
@@ -1150,6 +1152,28 @@ class IndicatorBot:
                 ev_out = compute_spot_events(ev_ctx)
                 self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
+                # Run SPY simulation strategy only after spot events are scanned for this candle.
+                # Scope: intraday SPY only, 1m/5m, closed candles only.
+                sim_strategy_result = None
+                if sym_upper == "SPY" and tf in ("1m", "5m"):
+                    sim_input = []
+                    for cc in pack["closed_candles"]:
+                        ts_val = cc.get("ts")
+                        if isinstance(ts_val, dt.datetime):
+                            ts_val = ts_val.isoformat()
+                        sim_input.append(
+                            {
+                                "timestamp": ts_val,
+                                "open": cc.get("open"),
+                                "high": cc.get("high"),
+                                "low": cc.get("low"),
+                                "close": cc.get("close"),
+                                "volume": cc.get("volume", 0.0),
+                            }
+                        )
+                    sim_strategy_result = run_strategy(sim_input)
+                    self._sim_strategy_results.setdefault(sym_upper, {})[tf] = sim_strategy_result
+
                 # Attach extras_advanced + strategies to snapshot so cached "row shape"
                 # is what zone/liquidity builders expect (no DB writes).
                 try:
@@ -1158,6 +1182,10 @@ class IndicatorBot:
                     pass
                 try:
                     snapshot["strategies"] = strategies
+                except Exception:
+                    pass
+                try:
+                    snapshot["spy_vwap_pullback_scalp_sim"] = sim_strategy_result
                 except Exception:
                     pass
     
