@@ -88,12 +88,13 @@ _SWINGS_SIM_LAST: Dict[str, Dict[str, Any]] = {}
 
 def _print_swings_sim_end() -> None:
     try:
-        print("[SWINGS_SIM_END]")
+        # print("[SWINGS_SIM_END]")
         for tf, data in sorted(_SWINGS_SIM_LAST.items()):
-            print("timeframe:", tf)
-            print("ts:", data.get("ts"))
-            print("swing_highs:", data.get("swing_highs"))
-            print("swing_lows:", data.get("swing_lows"))
+            # print("timeframe:", tf)
+            # print("ts:", data.get("ts"))
+            # print("swing_highs:", data.get("swing_highs"))
+            # print("swing_lows:", data.get("swing_lows"))
+            pass
     except Exception:
         pass
 
@@ -157,18 +158,18 @@ def reset_spot_event_counters() -> None:
 def print_spot_event_counters() -> None:
     ordered_calls = dict(sorted(_SPOT_EVENT_DETECTOR_CALL_COUNTS.items(), key=lambda kv: kv[0]))
     ordered_trig = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
-    print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
+    # print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
+    # print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
     ordered_ts = dict(sorted(_SPOT_EVENT_TRIGGER_TS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
+    # print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
     ordered_states = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
+    # print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
     ordered_states_tf = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.items(), key=lambda kv: kv[0]))
-    print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
-    print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
-    print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
-    print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
-    print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
+    # print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
+    # print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
+    # print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
+    # print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
+    # print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -791,16 +792,16 @@ def detect_choch(
             last3_highs = [x.get("level") for x in swing_highs[-3:]] if swing_highs else []
             last3_lows = [x.get("level") for x in swing_lows[-3:]] if swing_lows else []
 
-            print(
-                f"[5M_SWING_DEBUG] "
-                f"ts={ts} "
-                f"CURRENT_REF_HIGH={current_ref_high} "
-                f"CURRENT_REF_LOW={current_ref_low} "
-                f"LATEST_SWING_HIGH={latest_swing_high} "
-                f"LATEST_SWING_LOW={latest_swing_low} "
-                f"LAST_3_SWING_HIGHS={last3_highs} "
-                f"LAST_3_SWING_LOWS={last3_lows}"
-            )
+            # print(
+            #     f"[5M_SWING_DEBUG] "
+            #     f"ts={ts} "
+            #     f"CURRENT_REF_HIGH={current_ref_high} "
+            #     f"CURRENT_REF_LOW={current_ref_low} "
+            #     f"LATEST_SWING_HIGH={latest_swing_high} "
+            #     f"LATEST_SWING_LOW={latest_swing_low} "
+            #     f"LAST_3_SWING_HIGHS={last3_highs} "
+            #     f"LAST_3_SWING_LOWS={last3_lows}"
+            # )
         except Exception:
             pass
 
@@ -826,11 +827,11 @@ def detect_choch(
             break_condition = close < ref_level
             close_minus_ref = close - ref_level
 
-    print(
-        f"ts={ts}, tf={candle_tf}, state={structure_state}, "
-        f"h={candle_high}, l={candle_low}, c={close}, "
-        f"ref={ref_level}, break={break_condition}, c-ref={close_minus_ref}"
-    )
+    # print(
+    #     f"ts={ts}, tf={candle_tf}, state={structure_state}, "
+    #     f"h={candle_high}, l={candle_low}, c={close}, "
+    #     f"ref={ref_level}, break={break_condition}, c-ref={close_minus_ref}"
+    # )
 
     ref = lo_ref
     if ref:
@@ -1283,11 +1284,12 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
 
     if not _SWINGS_SIM_FIRST_PRINTED:
         _SWINGS_SIM_FIRST_PRINTED = True
-        print("[SWINGS_SIM_START]")
-        print("timeframe:", timeframe)
-        print("ts:", ts)
-        print("swing_highs:", ctx.swing_highs)
-        print("swing_lows:", ctx.swing_lows)
+        # print("[SWINGS_SIM_START]")
+        # print("timeframe:", timeframe)
+        # print("ts:", ts)
+        # print("swing_highs:", ctx.swing_highs)
+        # print("swing_lows:", ctx.swing_lows)
+        pass
 
     # ---------------- Diagnostics: structure_state input ----------------
     try:
