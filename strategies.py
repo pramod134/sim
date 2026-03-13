@@ -1,5 +1,22 @@
 from typing import Dict, Any, List, Optional
 
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_level_price(level: Dict[str, Any]) -> Optional[float]:
+    for key in ("price", "level", "value", "high", "low"):
+        p = _safe_float(level.get(key))
+        if p is not None:
+            return p
+    return None
+
 def _compute_sl_tp(
     direction: str,
     swings: Dict[str, Any],
@@ -16,7 +33,18 @@ def _compute_sl_tp(
     """
 
     is_bull = (direction == "bull")
-    buffer_pct = 0.0010  # 0.10% SL buffer
+    last_close = float(last_candle["close"])
+
+    atr = _safe_float((trend or {}).get("atr"))
+    if atr is None:
+        atr = _safe_float(last_candle.get("range"))
+    if atr is None or atr <= 0:
+        atr = max(last_close * 0.002, 1e-8)
+
+    # Dynamic volatility-adaptive buffer around the invalidation level.
+    atr_buffer = atr * 0.12
+    pct_buffer = last_close * 0.0008
+    sl_buffer = max(atr_buffer, pct_buffer)
 
     # ------------------------------
     # 1️⃣ Collect candidate SL levels
@@ -39,10 +67,11 @@ def _compute_sl_tp(
     # 2. Retest candle wick (last candle low/high)
     retest_low = float(last_candle["low"])
     retest_high = float(last_candle["high"])
+    retest_close = last_close
 
     # 3. Recent swing low/high (pivot)
-    pivots = swings.get("pivots", [])
-    recent_swing = pivots[-1] if pivots else None
+    pivot_candidates = swings.get("pivots") or swings.get("swings") or []
+    recent_swing = pivot_candidates[-1] if pivot_candidates else None
     swing_price = recent_swing.get("price") if recent_swing else None
 
     # -------------------------
@@ -57,8 +86,9 @@ def _compute_sl_tp(
         if swing_price:
             sl_raw_candidates.append(swing_price)
 
+        sl_raw_candidates.append(retest_close)
         sl_raw = max(sl_raw_candidates)
-        sl = sl_raw * (1 - buffer_pct)
+        sl = sl_raw - sl_buffer
 
     else:  # bearish
         if fvg and fvg_high:
@@ -67,14 +97,19 @@ def _compute_sl_tp(
         if swing_price:
             sl_raw_candidates.append(swing_price)
 
+        sl_raw_candidates.append(retest_close)
         sl_raw = min(sl_raw_candidates)
-        sl = sl_raw * (1 + buffer_pct)
+        sl = sl_raw + sl_buffer
 
     # SL zone is small band around SL (optional)
     sl_zone = {
         "low": sl if is_bull else sl_raw,
         "high": sl_raw if is_bull else sl,
-        "reason": "invalidation"
+        "reason": "invalidation_close",
+        "trigger_mode": "candle_close",
+        "invalid_if_close": sl,
+        "buffer": sl_buffer,
+        "reference_level": sl_raw,
     }
 
     # ------------------------------
@@ -83,10 +118,20 @@ def _compute_sl_tp(
     liq_levels = liquidity.get("levels", [])
 
     def upward_levels():
-        return [l for l in liq_levels if float(l["price"]) > float(last_candle["close"])]
+        out = []
+        for l in liq_levels:
+            p = _extract_level_price(l)
+            if p is not None and p > last_close:
+                out.append({**l, "_price": p})
+        return out
 
     def downward_levels():
-        return [l for l in liq_levels if float(l["price"]) < float(last_candle["close"])]
+        out = []
+        for l in liq_levels:
+            p = _extract_level_price(l)
+            if p is not None and p < last_close:
+                out.append({**l, "_price": p})
+        return out
 
     if is_bull:
         liqs = upward_levels()
@@ -95,9 +140,9 @@ def _compute_sl_tp(
 
     if liqs:
         # nearest liquidity in direction
-        liqs_sorted = sorted(liqs, key=lambda x: abs(x["price"] - last_candle["close"]))
+        liqs_sorted = sorted(liqs, key=lambda x: abs(x["_price"] - last_close))
         tp1 = {
-            "target": float(liqs_sorted[0]["price"]),
+            "target": float(liqs_sorted[0]["_price"]),
             "confidence": 0.8,
             "reason": "liquidity"
         }
@@ -160,12 +205,39 @@ def _compute_sl_tp(
     else:
         tp3 = None
 
+    # Ensure TP levels remain dynamic even when structural targets are missing.
+    risk_per_unit = abs(last_close - sl)
+    if risk_per_unit <= 0:
+        risk_per_unit = max(atr * 0.8, last_close * 0.001)
+
+    def rr_target(mult: float) -> float:
+        return last_close + (risk_per_unit * mult if is_bull else -risk_per_unit * mult)
+
+    if _safe_float(tp1.get("target")) is None:
+        tp1["target"] = rr_target(1.25)
+        tp1["reason"] = "risk_multiple_fallback"
+    if _safe_float(tp2.get("target")) is None:
+        tp2["target"] = rr_target(2.0)
+        tp2["reason"] = "risk_multiple_fallback"
+    if tp3 is None:
+        tp3 = {
+            "target": rr_target(3.0),
+            "confidence": 0.35,
+            "reason": "risk_multiple_extension",
+        }
+
     # combine TP levels
     tp_list = [tp1, tp2]
     if tp3:
         tp_list.append(tp3)
 
     return {
+        "entry": {
+            "type": "market_or_limit_retest",
+            "reference": "fvg_mid",
+            "price": last_close,
+            "trigger_mode": "candle_close_confirmation",
+        },
         "sl_zone": sl_zone,
         "tp_zones": tp_list
         }
