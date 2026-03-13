@@ -158,18 +158,18 @@ def reset_spot_event_counters() -> None:
 def print_spot_event_counters() -> None:
     ordered_calls = dict(sorted(_SPOT_EVENT_DETECTOR_CALL_COUNTS.items(), key=lambda kv: kv[0]))
     ordered_trig = dict(sorted(_SPOT_EVENT_TRIGGER_COUNTS.items(), key=lambda kv: kv[0]))
-    # print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
-    # print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
+    print(f"[SPOT_EVENT][DIAG] detector_call_counts={ordered_calls}")
+    print(f"[SPOT_EVENT][DIAG] triggered_counts={ordered_trig}")
     ordered_ts = dict(sorted(_SPOT_EVENT_TRIGGER_TS.items(), key=lambda kv: kv[0]))
-    # print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
+    print(f"[SPOT_EVENT][DIAG] triggered_ts_by_event={ordered_ts}")
     ordered_states = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS.items(), key=lambda kv: kv[0]))
-    # print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
+    print(f"[SPOT_EVENT][DIAG] structure_state_counts={ordered_states}")
     ordered_states_tf = dict(sorted(_SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF.items(), key=lambda kv: kv[0]))
-    # print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
-    # print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
-    # print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
-    # print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
-    # print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
+    print(f"[SPOT_EVENT][DIAG] structure_state_counts_by_tf={ordered_states_tf}")
+    print(f"[SPOT_EVENT][DIAG] last_structure_state={_SPOT_EVENT_LAST_STRUCTURE_STATE}")
+    print(f"[SPOT_EVENT][DIAG] choch_branch_scans={_SPOT_EVENT_CHOCH_BRANCH_SCANS}")
+    print(f"[SPOT_EVENT][DIAG] choch_diag={_SPOT_EVENT_CHOCH_DIAG}")
+    print(f"[SPOT_EVENT][DIAG] choch_diag_extra={_SPOT_EVENT_CHOCH_DIAG_EXTRA}")
 
 
 def _is_triggered_value(v: Any) -> bool:
@@ -1572,7 +1572,16 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
                 continue
             if (not was) or (_trigger_signature(v_prev) != _trigger_signature(v_now)):
                 _SPOT_EVENT_TRIGGER_COUNTS[str(k)] += 1
-                _SPOT_EVENT_TRIGGER_TS[str(k)].append({"tf": timeframe, "ts": ts})
+                v_now_dict = v_now if isinstance(v_now, dict) else {}
+                meta_now = v_now_dict.get("meta") if isinstance(v_now_dict.get("meta"), dict) else {}
+                _SPOT_EVENT_TRIGGER_TS[str(k)].append(
+                    {
+                        "tf": timeframe,
+                        "candle_ts": ts,
+                        "ref_candle_ts": meta_now.get("ref_ts"),
+                        "ref_level": meta_now.get("ref_level"),
+                    }
+                )
     except Exception:
         pass
 
