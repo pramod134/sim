@@ -1564,10 +1564,10 @@ def compute_structural_from_swings(
             point_key = (str(point_tf), point_ts, point_type, float(point_price), point_label)
 
             if _LAST_PRINTED_LIVE_POINT != point_key:
-                print(
-                    f"LIVE_SWING tf={point_tf}, ts={point_ts}, type={point_type}, "
-                    f"price={point_price}, label={point_label}"
-                )
+                # print(
+                #     f"LIVE_SWING tf={point_tf}, ts={point_ts}, type={point_type}, "
+                #     f"price={point_price}, label={point_label}"
+                # )
                 _LAST_PRINTED_LIVE_POINT = point_key
 
     return {
