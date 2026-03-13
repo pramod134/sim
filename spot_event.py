@@ -112,7 +112,7 @@ atexit.register(_print_swings_sim_end)
 # ------------------------------------------------------------------
 _SPOT_EVENT_DETECTOR_CALL_COUNTS = defaultdict(int)
 _SPOT_EVENT_TRIGGER_COUNTS = defaultdict(int)
-_SPOT_EVENT_TRIGGER_TS = defaultdict(list)  # event_key -> list[{"tf": str, "ts": Any}]
+_SPOT_EVENT_TRIGGER_TS = defaultdict(list)  # event_key -> list of trigger detail dicts
 _SPOT_EVENT_STRUCTURE_STATE_COUNTS = defaultdict(int)
 _SPOT_EVENT_STRUCTURE_STATE_COUNTS_BY_TF = defaultdict(int)  # "tf:state" -> count
 _SPOT_EVENT_LAST_STRUCTURE_STATE = None
@@ -193,6 +193,27 @@ def _is_triggered_value(v: Any) -> bool:
     if isinstance(v, (int, float)):
         return v != 0
     return bool(v)
+
+
+def _extract_ref_candle_ts(meta_now: Dict[str, Any]) -> Any:
+    """
+    Best-effort extraction of the reference candle timestamp from event meta.
+    Different detectors use slightly different key names.
+    """
+    for k in ("ref_ts", "reference_candle_ts", "ref_candle_ts", "anchor_ts", "swing_ts"):
+        if meta_now.get(k) is not None:
+            return meta_now.get(k)
+    return None
+
+
+def _extract_ref_level(meta_now: Dict[str, Any]) -> Any:
+    """
+    Best-effort extraction of reference level from event meta.
+    """
+    for k in ("ref_level", "level", "swing_level", "anchor_level"):
+        if meta_now.get(k) is not None:
+            return meta_now.get(k)
+    return None
 
 
 def _trigger_signature(v: Any) -> str:
@@ -1578,8 +1599,8 @@ def compute_spot_events(ctx: SpotEventContext) -> Dict[str, Any]:
                     {
                         "tf": timeframe,
                         "candle_ts": ts,
-                        "ref_candle_ts": meta_now.get("ref_ts"),
-                        "ref_level": meta_now.get("ref_level"),
+                        "ref_candle_ts": _extract_ref_candle_ts(meta_now),
+                        "ref_level": _extract_ref_level(meta_now),
                     }
                 )
     except Exception:
