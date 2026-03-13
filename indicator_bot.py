@@ -1154,9 +1154,9 @@ class IndicatorBot:
                 self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
                 # Run SPY simulation strategy only after spot events are scanned for this candle.
-                # Scope: intraday SPY only, 1m/5m, closed candles only.
+                # Scope: intraday SPY only, selected TFs, closed candles only.
                 sim_strategy_result = None
-                if sym_upper == "SPY" and tf in ("1m", "5m"):
+                if sym_upper == "SPY" and tf in ("1m", "3m", "5m", "15m", "1h"):
                     sim_input = []
                     for cc in pack["closed_candles"]:
                         ts_val = cc.get("ts")
