@@ -1197,8 +1197,8 @@ class IndicatorBot:
 
                         tf_cursor_map[tf] = len(trade_log)
 
-                    try:
-                        perf = sim_strategy_result.get("performance") if isinstance(sim_strategy_result, dict) else {}
+                        try:
+                            perf = sim_strategy_result.get("performance") if isinstance(sim_strategy_result, dict) else {}
                             print(
                                 "[STRATEGY][SIM] "
                                 f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
@@ -1206,13 +1206,13 @@ class IndicatorBot:
                                 f"total_trades={(perf or {}).get('total_trades')} "
                                 f"net_profit={(perf or {}).get('net_profit')}"
                             )
-                    except Exception:
-                           print(
-                               "[STRATEGY][SIM] "
-                               f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
-                               "run_strategy executed"
-                           )
-                        pass
+                        except Exception:
+                            print(
+                                "[STRATEGY][SIM] "
+                                f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
+                                "run_strategy executed"
+                            )
+                            pass
 
                 # Attach extras_advanced + strategies to snapshot so cached "row shape"
                 # is what zone/liquidity builders expect (no DB writes).
