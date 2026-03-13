@@ -858,6 +858,8 @@ class IndicatorBot:
 
         # Run the standard update pipeline
         await self._update_all_symbols()
+        # Ensure event counters are also emitted when running via on_candle() callbacks.
+        self._maybe_log_event_counters()
 
     def print_event_summary(self) -> None:
         """
@@ -875,7 +877,7 @@ class IndicatorBot:
         # Spot-event per-event trigger counters (printed by spot_event module)
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
-            # print_spot_event_counters()
+            print_spot_event_counters()
         except Exception as e:
             pass
             # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
@@ -896,7 +898,7 @@ class IndicatorBot:
         # Spot-event per-event trigger counters (printed by spot_event module)
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
-            # print_spot_event_counters()
+            print_spot_event_counters()
         except Exception as e:
             pass
             # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
@@ -952,7 +954,7 @@ class IndicatorBot:
         try:
             from spot_event import print_spot_event_counters  # local import to avoid cycles
 
-            # print_spot_event_counters()
+            print_spot_event_counters()
         except Exception:
             pass
 
@@ -1188,30 +1190,30 @@ class IndicatorBot:
                         for t in new_trades:
                             if not isinstance(t, dict):
                                 continue
-                            print(
-                                "[STRATEGY][TRADE] "
-                                f"symbol={sym_upper} tf={tf} "
-                                f"entry_ts={t.get('entry_fill_timestamp')} entry_px={t.get('entry_price')} "
-                                f"exit_ts={t.get('exit_timestamp')} exit_px={t.get('exit_price')}"
-                            )
+                            # print(
+                            #     "[STRATEGY][TRADE] "
+                            #     f"symbol={sym_upper} tf={tf} "
+                            #     f"entry_ts={t.get('entry_fill_timestamp')} entry_px={t.get('entry_price')} "
+                            #     f"exit_ts={t.get('exit_timestamp')} exit_px={t.get('exit_price')}"
+                            # )
 
                         tf_cursor_map[tf] = len(trade_log)
 
                         try:
                             perf = sim_strategy_result.get("performance") if isinstance(sim_strategy_result, dict) else {}
-                            print(
-                                "[STRATEGY][SIM] "
-                                f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
-                                f"candles={len(pack['closed_candles'])} "
-                                f"total_trades={(perf or {}).get('total_trades')} "
-                                f"net_profit={(perf or {}).get('net_profit')}"
-                            )
+                            # print(
+                            #     "[STRATEGY][SIM] "
+                            #     f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
+                            #     f"candles={len(pack['closed_candles'])} "
+                            #     f"total_trades={(perf or {}).get('total_trades')} "
+                            #     f"net_profit={(perf or {}).get('net_profit')}"
+                            # )
                         except Exception:
-                            print(
-                                "[STRATEGY][SIM] "
-                                f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
-                                "run_strategy executed"
-                            )
+                            # print(
+                            #     "[STRATEGY][SIM] "
+                            #     f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
+                            #     "run_strategy executed"
+                            # )
                             pass
 
                 # Attach extras_advanced + strategies to snapshot so cached "row shape"
