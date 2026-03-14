@@ -212,49 +212,77 @@ async def _create_simulation_run(
 ) -> None:
     base_url, key = _sb_env()
     now = dt.datetime.now(dt.timezone.utc).isoformat()
-    await _sb_insert(
-        client,
-        base_url,
-        key,
-        "simulation_runs",
-        payload={
-            "id": run_id,
-            "status": "running",
-            "start_time": now,
-            "symbol": symbol,
-            "timeframe": None,
-            "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
-            "strategy_version": "v1.0",
-            "event_counters": {
-                "bos_up": 0,
-                "bos_down": 0,
-                "choch_up": 0,
-                "choch_down": 0,
-                "displacement_up": 0,
-                "displacement_down": 0,
-                "liquidity_sweep": 0,
-            },
-            "event_candles": {
-                "bos_up": [],
-                "bos_down": [],
-                "choch_up": [],
-                "choch_down": [],
-                "displacement_up": [],
-                "displacement_down": [],
-                "liquidity_sweep": [],
-            },
-            "trades_summary": {},
-            "trades": [],
-            "config": {
-                "symbol": symbol,
-                "seed_date": seed_date,
-                "sim_period": sim_period,
-            },
-            "error_message": None,
-            "updated_at": now,
+    full_payload: Dict[str, Any] = {
+        "id": run_id,
+        "status": "running",
+        "start_time": now,
+        "symbol": symbol,
+        "timeframe": "multi",
+        "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
+        "strategy_version": "v1.0",
+        "event_counters": {
+            "bos_up": 0,
+            "bos_down": 0,
+            "choch_up": 0,
+            "choch_down": 0,
+            "displacement_up": 0,
+            "displacement_down": 0,
+            "liquidity_sweep": 0,
         },
-        returning="minimal",
-    )
+        "event_candles": {
+            "bos_up": [],
+            "bos_down": [],
+            "choch_up": [],
+            "choch_down": [],
+            "displacement_up": [],
+            "displacement_down": [],
+            "liquidity_sweep": [],
+        },
+        "trades_summary": {},
+        "trades": [],
+        "config": {
+            "symbol": symbol,
+            "seed_date": seed_date,
+            "sim_period": sim_period,
+        },
+        "error_message": None,
+        "updated_at": now,
+    }
+
+    fallback_payload: Dict[str, Any] = {
+        "id": run_id,
+        "status": "running",
+        "start_time": now,
+        "symbol": symbol,
+        "timeframe": "multi",
+        "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
+        "strategy_version": "v1.0",
+        "error_message": None,
+        "updated_at": now,
+    }
+
+    try:
+        await _sb_insert(
+            client,
+            base_url,
+            key,
+            "simulation_runs",
+            payload=full_payload,
+            returning="minimal",
+        )
+    except httpx.HTTPStatusError as e:
+        # Some deployments have a reduced schema and reject one or more JSON columns.
+        # Retry with a strict minimal payload so run tracking is still created.
+        body = e.response.text[:500] if e.response is not None else str(e)
+        logger.warning("full simulation_runs insert failed (retrying minimal payload): %s", body)
+        await _sb_insert(
+            client,
+            base_url,
+            key,
+            "simulation_runs",
+            payload=fallback_payload,
+            returning="minimal",
+        )
 
 
 async def _update_simulation_run(
