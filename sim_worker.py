@@ -9,6 +9,7 @@ import httpx
 from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
 from liquidity_pool_builder import print_last_liquidity_output
+import spot_event as spot_event_module
 
 
 # ----------------------------- Supabase REST -----------------------------
@@ -72,6 +73,198 @@ async def _sb_patch(
     r.raise_for_status()
     # representation returns json array (or object), minimal returns empty
     return r.json() if r.text else None
+
+
+async def _sb_insert(
+    client: httpx.AsyncClient,
+    base_url: str,
+    key: str,
+    table: str,
+    payload: Dict[str, Any],
+    *,
+    returning: str = "representation",
+) -> Any:
+    endpoint = f"{base_url}/rest/v1/{table}"
+    hdrs = _sb_headers(key)
+    hdrs["Prefer"] = f"return={returning}"
+    r = await client.post(endpoint, headers=hdrs, json=payload, timeout=30.0)
+    r.raise_for_status()
+    return r.json() if r.text else None
+
+
+def _to_iso_utc(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        if isinstance(value, dt.datetime):
+            out = value
+        else:
+            out = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if out.tzinfo is None:
+            out = out.replace(tzinfo=dt.timezone.utc)
+        return out.astimezone(dt.timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _normalize_trade(trade: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "entry_ts": _to_iso_utc(trade.get("entry_fill_timestamp") or trade.get("entry_signal_timestamp")),
+        "exit_ts": _to_iso_utc(trade.get("final_exit_timestamp") or trade.get("exit_timestamp")),
+        "side": trade.get("side"),
+        "entry_price": trade.get("entry_price"),
+        "exit_price": trade.get("final_exit_price") or trade.get("exit_price"),
+        "quantity": trade.get("position_size"),
+        "pnl": trade.get("net_pnl"),
+        "reason_exit": trade.get("exit_reason"),
+    }
+
+
+def _build_event_payloads() -> tuple[Dict[str, int], Dict[str, list[str]]]:
+    trig_counts = getattr(spot_event_module, "_SPOT_EVENT_TRIGGER_COUNTS", {}) or {}
+    trig_ts = getattr(spot_event_module, "_SPOT_EVENT_TRIGGER_TS", {}) or {}
+
+    event_counters: Dict[str, int] = {
+        "bos_up": int(trig_counts.get("structure_break_up", 0) or 0),
+        "bos_down": int(trig_counts.get("structure_break_down", 0) or 0),
+        "choch_up": int(trig_counts.get("choch_up", 0) or 0),
+        "choch_down": int(trig_counts.get("choch_down", 0) or 0),
+        "displacement_up": int(trig_counts.get("displacement_up", 0) or 0),
+        "displacement_down": int(trig_counts.get("displacement_down", 0) or 0),
+        "liquidity_sweep": int(trig_counts.get("liquidity_sweep_high", 0) or 0)
+        + int(trig_counts.get("liquidity_sweep_low", 0) or 0),
+    }
+
+    def _event_ts_list(key: str) -> list[str]:
+        out: list[str] = []
+        for row in (trig_ts.get(key) or []):
+            if not isinstance(row, dict):
+                continue
+            ts_iso = _to_iso_utc(row.get("candle_ts"))
+            if ts_iso:
+                out.append(ts_iso)
+        return sorted(list(set(out)))
+
+    event_candles: Dict[str, list[str]] = {
+        "bos_up": _event_ts_list("structure_break_up"),
+        "bos_down": _event_ts_list("structure_break_down"),
+        "choch_up": _event_ts_list("choch_up"),
+        "choch_down": _event_ts_list("choch_down"),
+        "displacement_up": _event_ts_list("displacement_up"),
+        "displacement_down": _event_ts_list("displacement_down"),
+        "liquidity_sweep": sorted(
+            list(set(_event_ts_list("liquidity_sweep_high") + _event_ts_list("liquidity_sweep_low")))
+        ),
+    }
+    return event_counters, event_candles
+
+
+def _build_trades_payload(bot: IndicatorBot, symbol: str) -> tuple[Dict[str, Any], list[Dict[str, Any]]]:
+    sym = (symbol or "").upper()
+    tf_map = bot._sim_strategy_results.get(sym, {}) if hasattr(bot, "_sim_strategy_results") else {}
+
+    picked: Optional[Dict[str, Any]] = None
+    for tf in ("1m", "5m", "3m", "15m", "1h", "1d", "1w"):
+        result = tf_map.get(tf)
+        if isinstance(result, dict):
+            picked = result
+            break
+    if picked is None:
+        for result in tf_map.values():
+            if isinstance(result, dict):
+                picked = result
+                break
+
+    perf = (picked or {}).get("performance") if isinstance(picked, dict) else {}
+    perf = perf if isinstance(perf, dict) else {}
+    trade_log = (picked or {}).get("trade_log") if isinstance(picked, dict) else []
+    trade_log = trade_log if isinstance(trade_log, list) else []
+
+    trades_summary: Dict[str, Any] = {
+        "total_trades": int(perf.get("total_trades", len(trade_log)) or 0),
+        "wins": int(perf.get("winning_trades", 0) or 0),
+        "losses": int(perf.get("losing_trades", 0) or 0),
+        "win_rate": round(float(perf.get("win_rate", 0.0) or 0.0) * 100.0, 2),
+        "gross_profit": float(perf.get("gross_profit", 0.0) or 0.0),
+        "gross_loss": -abs(float(perf.get("gross_loss", 0.0) or 0.0)),
+        "net_pnl": float(perf.get("net_profit", 0.0) or 0.0),
+        "max_drawdown": -abs(float(perf.get("max_drawdown", 0.0) or 0.0)),
+    }
+    trades = [_normalize_trade(t) for t in trade_log if isinstance(t, dict)]
+    return trades_summary, trades
+
+
+async def _create_simulation_run(
+    client: httpx.AsyncClient,
+    run_id: str,
+    symbol: str,
+    seed_date: str,
+    sim_period: int,
+) -> None:
+    base_url, key = _sb_env()
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    await _sb_insert(
+        client,
+        base_url,
+        key,
+        "simulation_runs",
+        payload={
+            "id": run_id,
+            "status": "running",
+            "start_time": now,
+            "symbol": symbol,
+            "timeframe": None,
+            "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
+            "strategy_version": "v1.0",
+            "event_counters": {
+                "bos_up": 0,
+                "bos_down": 0,
+                "choch_up": 0,
+                "choch_down": 0,
+                "displacement_up": 0,
+                "displacement_down": 0,
+                "liquidity_sweep": 0,
+            },
+            "event_candles": {
+                "bos_up": [],
+                "bos_down": [],
+                "choch_up": [],
+                "choch_down": [],
+                "displacement_up": [],
+                "displacement_down": [],
+                "liquidity_sweep": [],
+            },
+            "trades_summary": {},
+            "trades": [],
+            "config": {
+                "symbol": symbol,
+                "seed_date": seed_date,
+                "sim_period": sim_period,
+            },
+            "error_message": None,
+            "updated_at": now,
+        },
+        returning="minimal",
+    )
+
+
+async def _update_simulation_run(
+    client: httpx.AsyncClient,
+    run_id: str,
+    payload: Dict[str, Any],
+) -> None:
+    base_url, key = _sb_env()
+    body = dict(payload)
+    body["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    await _sb_patch(
+        client,
+        base_url,
+        key,
+        "simulation_runs",
+        params={"id": f"eq.{run_id}"},
+        payload=body,
+        returning="minimal",
+    )
 
 
 async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
@@ -171,6 +364,15 @@ async def main() -> int:
         symbol = (job.get("symbol") or "").upper()
         seed_date = job.get("seed_date")  # expected 'YYYY-MM-DD' in ET
         sim_period = int(job.get("sim_period") or 0)  # days
+        run_id = str(job.get("run_id") or "")
+
+        sim_run_logging_enabled = False
+        if run_id:
+            try:
+                await _create_simulation_run(client, run_id=run_id, symbol=symbol, seed_date=seed_date, sim_period=sim_period)
+                sim_run_logging_enabled = True
+            except Exception:
+                sim_run_logging_enabled = False
 
         if not symbol or not seed_date or sim_period <= 0:
             msg = f"Invalid job fields: symbol={symbol!r} seed_date={seed_date!r} sim_period={sim_period!r}"
@@ -235,6 +437,7 @@ async def main() -> int:
 
             first_live_to_bot: Optional[Dict[str, Any]] = None
             last_live_to_bot: Optional[Dict[str, Any]] = None
+            emitted_events = 0
 
             for d in sim_days:
                 # IMPORTANT: stream_day() now behaves like live:
@@ -278,6 +481,23 @@ async def main() -> int:
                     }
 
                     await bot.on_candle(symbol=symbol, timeframe=tf, candle=candle)
+                    emitted_events += 1
+
+                    if sim_run_logging_enabled and emitted_events % 250 == 0:
+                        try:
+                            event_counters, event_candles = _build_event_payloads()
+                            await _update_simulation_run(
+                                client,
+                                run_id=run_id,
+                                payload={
+                                    "event_counters": event_counters,
+                                    "event_candles": event_candles,
+                                    "simulation_start_time": min(first_live_ts.values()) if first_live_ts else None,
+                                    "simulation_end_time": max(last_live_ts.values()) if last_live_ts else None,
+                                },
+                            )
+                        except Exception:
+                            pass
 
             # print("[SIM][LIVE] Live sim candle range (UTC):")
             for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
@@ -318,6 +538,27 @@ async def main() -> int:
                 pass
                 # print(f"[SIM_WORKER] Failed to print final liquidity output: {e}")
 
+            if sim_run_logging_enabled:
+                try:
+                    event_counters, event_candles = _build_event_payloads()
+                    trades_summary, trades = _build_trades_payload(bot, symbol)
+                    await _update_simulation_run(
+                        client,
+                        run_id=run_id,
+                        payload={
+                            "status": "completed",
+                            "end_time": dt.datetime.now(dt.timezone.utc).isoformat(),
+                            "simulation_start_time": min(first_live_ts.values()) if first_live_ts else None,
+                            "simulation_end_time": max(last_live_ts.values()) if last_live_ts else None,
+                            "event_counters": event_counters,
+                            "event_candles": event_candles,
+                            "trades_summary": trades_summary,
+                            "trades": trades,
+                        },
+                    )
+                except Exception:
+                    pass
+
             await _mark_done(client, symbol)
             # print(f"[SIM_WORKER] DONE: {symbol}")
             return 0
@@ -326,6 +567,16 @@ async def main() -> int:
             msg = f"{type(e).__name__}: {e}"
             # print(f"[SIM_WORKER] ERROR: {msg}")
             try:
+                if sim_run_logging_enabled and run_id:
+                    await _update_simulation_run(
+                        client,
+                        run_id=run_id,
+                        payload={
+                            "status": "failed",
+                            "end_time": dt.datetime.now(dt.timezone.utc).isoformat(),
+                            "error_message": msg[:2000],
+                        },
+                    )
                 await _mark_error(client, symbol, msg)
             except Exception as e2:
                 pass
