@@ -2,6 +2,7 @@ import os
 import asyncio
 import datetime as dt
 import uuid
+import logging
 from typing import Any, Dict, Optional
 
 import httpx
@@ -10,6 +11,14 @@ from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
 from liquidity_pool_builder import print_last_liquidity_output
 import spot_event as spot_event_module
+
+
+LOG_LEVEL = (os.getenv("LOG_LEVEL") or "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [sim_worker] %(message)s",
+)
+logger = logging.getLogger("sim_worker")
 
 
 # ----------------------------- Supabase REST -----------------------------
@@ -352,13 +361,18 @@ async def _mark_error(client: httpx.AsyncClient, symbol: str, msg: str) -> None:
 # ----------------------------- Worker Main -----------------------------
 
 async def main() -> int:
+    logger.info("sim worker booting")
     # quick env validation early
-    _sb_env()
+    try:
+        _sb_env()
+    except Exception as e:
+        logger.exception("supabase env validation failed: %s", e)
+        return 1
 
     async with httpx.AsyncClient() as client:
         job = await _claim_one_job(client)
         if not job:
-            # print("[SIM_WORKER] No sim_ticker rows with start_sim='y'. Exiting.")
+            logger.info("no sim_ticker rows with start_sim='y'; worker exiting")
             return 0
 
         symbol = (job.get("symbol") or "").upper()
@@ -371,16 +385,26 @@ async def main() -> int:
             try:
                 await _create_simulation_run(client, run_id=run_id, symbol=symbol, seed_date=seed_date, sim_period=sim_period)
                 sim_run_logging_enabled = True
-            except Exception:
+                logger.info("created simulation_runs row for run_id=%s symbol=%s", run_id, symbol)
+            except Exception as e:
                 sim_run_logging_enabled = False
+                logger.exception("failed to create simulation_runs row for run_id=%s: %s", run_id, e)
+        else:
+            logger.warning("claimed job for symbol=%s without run_id; simulation_runs logging disabled", symbol)
 
         if not symbol or not seed_date or sim_period <= 0:
             msg = f"Invalid job fields: symbol={symbol!r} seed_date={seed_date!r} sim_period={sim_period!r}"
-            # print(f"[SIM_WORKER] {msg}")
+            logger.error(msg)
             await _mark_error(client, symbol or "UNKNOWN", msg)
             return 1
 
-        # print(f"[SIM_WORKER] Claimed job: symbol={symbol} seed_date={seed_date} sim_period={sim_period}")
+        logger.info(
+            "claimed job symbol=%s seed_date=%s sim_period=%s run_id=%s",
+            symbol,
+            seed_date,
+            sim_period,
+            run_id,
+        )
 
         try:
             # Candle engine reads candles from DB via Supabase REST (we’ll patch candle_engine next)
@@ -402,6 +426,7 @@ async def main() -> int:
 
             seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
             await bot.bootstrap(symbol, seed)
+            logger.info("seeded simulation data for symbol=%s", symbol)
 
             # ---------------- SEED LOGS ----------------
             def _ts_str(x: Any) -> str:
@@ -496,8 +521,8 @@ async def main() -> int:
                                     "simulation_end_time": max(last_live_ts.values()) if last_live_ts else None,
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("failed incremental simulation_runs update run_id=%s: %s", run_id, e)
 
             # print("[SIM][LIVE] Live sim candle range (UTC):")
             for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
@@ -510,33 +535,29 @@ async def main() -> int:
             try:
                 emit_counts = engine.get_live_emit_counts(symbol)
                 first_last = engine.get_live_first_last(symbol)
-                # print(f"[SIM][ENGINE] Live emitted counts by tf: {emit_counts}")
-                # print(f"[SIM][ENGINE] First emitted: {first_last.get('first')}")
-                # print(f"[SIM][ENGINE] Last emitted:  {first_last.get('last')}")
+                logger.info("engine emitted counts by timeframe: %s", emit_counts)
+                logger.info("engine first emitted candle: %s", first_last.get("first"))
+                logger.info("engine last emitted candle: %s", first_last.get("last"))
             except Exception as e:
-                pass
-                # print(f"[SIM][ENGINE] Diagnostics read failed: {e}")
+                logger.warning("engine diagnostics read failed: %s", e)
 
             # Print final event summary (totals + per timeframe + per day)
             try:
                 bot.print_event_summary()
             except Exception as e:
-                pass
-                # print(f"[SIM_WORKER] Failed to print event summary: {e}")
+                logger.warning("failed to print event summary: %s", e)
 
             # Print only end-of-run diagnostics counts
             try:
                 bot.dump_diag_counts(symbol)
             except Exception as e:
-                pass
-                # print(f"[SIM_WORKER] Failed to print diag counts: {e}")
+                logger.warning("failed to print diag counts: %s", e)
 
             # Print ONLY the last liquidity pool output (once per sim run)
             try:
                 print_last_liquidity_output()
             except Exception as e:
-                pass
-                # print(f"[SIM_WORKER] Failed to print final liquidity output: {e}")
+                logger.warning("failed to print final liquidity output: %s", e)
 
             if sim_run_logging_enabled:
                 try:
@@ -556,16 +577,22 @@ async def main() -> int:
                             "trades": trades,
                         },
                     )
-                except Exception:
-                    pass
+                    logger.info(
+                        "final simulation_runs update saved run_id=%s counters=%s total_trades=%s",
+                        run_id,
+                        event_counters,
+                        trades_summary.get("total_trades"),
+                    )
+                except Exception as e:
+                    logger.exception("failed final simulation_runs update run_id=%s: %s", run_id, e)
 
             await _mark_done(client, symbol)
-            # print(f"[SIM_WORKER] DONE: {symbol}")
+            logger.info("simulation completed successfully for symbol=%s", symbol)
             return 0
 
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
-            # print(f"[SIM_WORKER] ERROR: {msg}")
+            logger.exception("simulation failed for symbol=%s: %s", symbol, msg)
             try:
                 if sim_run_logging_enabled and run_id:
                     await _update_simulation_run(
@@ -579,8 +606,7 @@ async def main() -> int:
                     )
                 await _mark_error(client, symbol, msg)
             except Exception as e2:
-                pass
-                # print(f"[SIM_WORKER] Failed to mark error in DB: {e2}")
+                logger.exception("failed to mark DB error for symbol=%s: %s", symbol, e2)
             return 1
 
 
