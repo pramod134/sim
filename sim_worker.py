@@ -300,7 +300,8 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
     if not job:
         return None
 
-    symbol = (job.get("symbol") or "").upper()
+    symbol_db = str(job.get("symbol") or "")
+    symbol = symbol_db.upper()
     run_id = str(uuid.uuid4())
     now = dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -310,7 +311,7 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
         base_url,
         key,
         "sim_ticker",
-        params={"symbol": f"eq.{symbol}"},
+        params={"symbol": f"eq.{symbol_db}"},
         payload={
             "start_sim": "n",
             "status": "running",
@@ -323,11 +324,20 @@ async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
     )
 
     # PostgREST returns a list for PATCH with representation
-    if isinstance(updated, list) and updated:
-        return updated[0]
-    if isinstance(updated, dict):
-        return updated
-    return job
+    if isinstance(updated, list):
+        if not updated:
+            logger.warning("claim patch matched zero sim_ticker rows for symbol=%s", symbol_db)
+            return None
+        out = dict(updated[0])
+    elif isinstance(updated, dict):
+        out = dict(updated)
+    else:
+        logger.warning("claim patch returned unexpected payload type=%s for symbol=%s", type(updated).__name__, symbol_db)
+        return None
+
+    out["_symbol_db"] = symbol_db
+    out["run_id"] = str(out.get("run_id") or run_id)
+    return out
 
 
 async def _mark_done(client: httpx.AsyncClient, symbol: str) -> None:
@@ -375,7 +385,8 @@ async def main() -> int:
             logger.info("no sim_ticker rows with start_sim='y'; worker exiting")
             return 0
 
-        symbol = (job.get("symbol") or "").upper()
+        symbol_db = str(job.get("_symbol_db") or job.get("symbol") or "")
+        symbol = symbol_db.upper()
         seed_date = job.get("seed_date")  # expected 'YYYY-MM-DD' in ET
         sim_period = int(job.get("sim_period") or 0)  # days
         run_id = str(job.get("run_id") or "")
@@ -395,7 +406,7 @@ async def main() -> int:
         if not symbol or not seed_date or sim_period <= 0:
             msg = f"Invalid job fields: symbol={symbol!r} seed_date={seed_date!r} sim_period={sim_period!r}"
             logger.error(msg)
-            await _mark_error(client, symbol or "UNKNOWN", msg)
+            await _mark_error(client, symbol_db or "UNKNOWN", msg)
             return 1
 
         logger.info(
@@ -586,7 +597,7 @@ async def main() -> int:
                 except Exception as e:
                     logger.exception("failed final simulation_runs update run_id=%s: %s", run_id, e)
 
-            await _mark_done(client, symbol)
+            await _mark_done(client, symbol_db)
             logger.info("simulation completed successfully for symbol=%s", symbol)
             return 0
 
@@ -604,7 +615,7 @@ async def main() -> int:
                             "error_message": msg[:2000],
                         },
                     )
-                await _mark_error(client, symbol, msg)
+                await _mark_error(client, symbol_db or symbol, msg)
             except Exception as e2:
                 logger.exception("failed to mark DB error for symbol=%s: %s", symbol, e2)
             return 1
