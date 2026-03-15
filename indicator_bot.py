@@ -1307,10 +1307,30 @@ class IndicatorBot:
                     "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                 }
 
-                spot_rows = await fetch_spot_tf_rows_for_symbol(sym_upper)
+                fvg_rows: List[Dict[str, Any]] = []
+                current_price = None
+                snap_1m = snap_by_tf.get("1m") if isinstance(snap_by_tf, dict) else None
+                if isinstance(snap_1m, dict):
+                    try:
+                        current_price = float((snap_1m.get("last_candle") or {}).get("close"))
+                    except Exception:
+                        current_price = None
+                for tf in self.timeframes:
+                    snap = snap_by_tf.get(tf)
+                    if not isinstance(snap, dict):
+                        continue
+                    fvg_rows.append(
+                        {
+                            "timeframe": tf,
+                            "fvgs": snap.get("fvgs") or [],
+                            "current_price": current_price,
+                        }
+                    )
+
                 fvg_pool = build_symbol_fvg_pool(
                     symbol=sym_upper,
-                    spot_tf_rows=spot_rows,
+                    fvg_rows=fvg_rows,
+                    current_price=current_price,
                 )
                 await upsert_symbol_fvg_pool(
                     fvg_pool=fvg_pool,

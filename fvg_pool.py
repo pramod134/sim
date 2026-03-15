@@ -106,16 +106,11 @@ def _mergeable(a: Dict[str, Any], b: Dict[str, Any], pct_tolerance: float) -> bo
     return dist <= tol
 
 
-def _extract_current_price(spot_tf_rows: List[Dict[str, Any]]) -> Optional[float]:
+def _extract_current_price(fvg_rows: List[Dict[str, Any]]) -> Optional[float]:
     candidates: List[Tuple[int, float]] = []
-    for row in spot_tf_rows:
+    for row in fvg_rows:
         tf_rank = _tf_rank(row.get("timeframe"))
-        last_candle = row.get("last_candle")
-        close_val = None
-        if isinstance(last_candle, dict):
-            close_val = _to_float(last_candle.get("close"))
-        if close_val is None:
-            close_val = _to_float(row.get("current_price"))
+        close_val = _to_float(row.get("current_price"))
         if close_val is not None:
             candidates.append((tf_rank, close_val))
     if not candidates:
@@ -326,7 +321,8 @@ def _cluster_members(items: List[Dict[str, Any]], pct_tolerance: float) -> List[
 def build_symbol_fvg_pool(
     *,
     symbol: str,
-    spot_tf_rows: List[Dict[str, Any]],
+    fvg_rows: List[Dict[str, Any]],
+    current_price: Optional[float] = None,
     timeframes_used: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     symbol_norm = str(symbol or "").upper()
@@ -339,7 +335,7 @@ def build_symbol_fvg_pool(
     normalized: List[Dict[str, Any]] = []
     used_tfs_set = set()
 
-    for row in spot_tf_rows or []:
+    for row in fvg_rows or []:
         tf = row.get("timeframe")
         if not isinstance(tf, str) or not tf.strip():
             continue
@@ -400,7 +396,8 @@ def build_symbol_fvg_pool(
                 }
             )
 
-    current_price = _extract_current_price(spot_tf_rows or [])
+    if current_price is None:
+        current_price = _extract_current_price(fvg_rows or [])
     pct_tolerance = 0.10
 
     pools_by_direction: Dict[str, List[Dict[str, Any]]] = {"bull": [], "bear": []}
