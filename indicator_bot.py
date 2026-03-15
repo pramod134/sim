@@ -1,18 +1,11 @@
 import os
 import math
 import asyncio
+import json
 import datetime as dt
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-
-# Zone finder is optional in the simulation repo.
-# If zone_finder.py isn't present, run without it (no indicator logic changes).
-try:
-    from zone_finder import build_symbol_zone_map, upsert_symbol_zone_map  # type: ignore
-except Exception:
-    build_symbol_zone_map = None  # type: ignore
-    upsert_symbol_zone_map = None  # type: ignore
 
 from candle_engine import CandleEngine, SUPPORTED_TFS
 
@@ -29,6 +22,8 @@ from liquidity_pool_builder import build_liquidity_pool
 
 # Events engine (NEW)
 from spot_event import SpotEventContext, compute_spot_events
+
+from fvg_pool import build_symbol_fvg_pool, upsert_symbol_fvg_pool
 
 
 
@@ -1251,7 +1246,7 @@ class IndicatorBot:
                 #     f"(ts={ts_dt.isoformat()}, trend={trend.get('state')})"
                 # )
     
-            # ---------------- ZONE FINDER (Option A: all TFs -> one symbol map) ----------------
+            # ---------------- FVG POOL (all TFs -> one symbol-level latest pool) ----------------
             try:
                 # Use in-memory cache as the source of spot_tf_rows (DB is write-only/verification).
                 spot_rows: List[Dict[str, Any]] = []
@@ -1312,15 +1307,26 @@ class IndicatorBot:
                     "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                 }
 
-    
-                if build_symbol_zone_map is not None:
-                    _ = build_symbol_zone_map(
-                        symbol=sym_upper,
-                        spot_tf_rows=spot_rows,
-                        candle_engine=self.engine,
-                    )
-                # Simulation: NO DB writes (zone_finder). If zone_finder is not present, skip.
-    
+                spot_rows = await fetch_spot_tf_rows_for_symbol(sym_upper)
+                fvg_pool = build_symbol_fvg_pool(
+                    symbol=sym_upper,
+                    spot_tf_rows=spot_rows,
+                )
+                await upsert_symbol_fvg_pool(
+                    fvg_pool=fvg_pool,
+                    table="fvg_pool",
+                )
+
+                meta = fvg_pool.get("meta") or {}
+                print(
+                    f"[FVG_POOL] Updated {sym_upper} "
+                    f"raw={meta.get('raw_fvg_count', 0)} "
+                    f"eligible={meta.get('eligible_fvg_count', 0)} "
+                    f"bull_pools={meta.get('bullish_pool_count', 0)} "
+                    f"bear_pools={meta.get('bearish_pool_count', 0)}"
+                )
+                print(f"[FVG_POOL][FINAL] {json.dumps(fvg_pool, indent=2, default=str)}")
+
             except Exception as e:
                 pass
-                # print(f"[ZONE_FINDER] Failed for {sym_upper}: {e}")
+                # print(f"[FVG_POOL] Failed for {sym_upper}: {e}")
