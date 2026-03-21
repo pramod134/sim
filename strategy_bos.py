@@ -172,20 +172,48 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _trade_summary(state: Dict[str, Any]) -> Dict[str, Any]:
+def _trade_summary(state: Dict[str, Any], symbol: Optional[str] = None, timeframe: Optional[str] = None) -> Dict[str, Any]:
     trades = state["completed_trades"]
     total_profit_loss = sum((_safe_float(t.get("gross_pnl"), 0.0) or 0.0) for t in trades)
     wins = sum(1 for t in trades if (_safe_float(t.get("gross_pnl"), 0.0) or 0.0) > 0)
     losses = sum(1 for t in trades if (_safe_float(t.get("gross_pnl"), 0.0) or 0.0) < 0)
     flats = len(trades) - wins - losses
+    avg_profit_loss_per_trade = (total_profit_loss / len(trades)) if trades else 0.0
     return {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "initial_capital": state["config"]["initial_capital"],
+        "current_cash": state["cash"],
         "total_trades": len(trades),
         "winning_trades": wins,
         "losing_trades": losses,
         "flat_trades": flats,
         "total_profit_loss": total_profit_loss,
+        "avg_profit_loss_per_trade": avg_profit_loss_per_trade,
         "trade_list": _trade_list_with_pl(trades),
     }
+
+
+def print_bos_final_summaries() -> None:
+    print("[BOS_V1] FINAL SUMMARY START")
+    for (symbol, timeframe), state in sorted(_BOS_STATE.items()):
+        cfg = state["config"]
+        summary = _trade_summary(state, symbol, timeframe)
+        print(
+            f"[BOS_V1] FINAL SUMMARY | Symbol={symbol} | TF={timeframe} | "
+            f"Initial={cfg['initial_capital']:.2f} | Cash={state['cash']:.2f} | "
+            f"Trades={summary['total_trades']} | Wins={summary['winning_trades']} | "
+            f"Losses={summary['losing_trades']} | Flat={summary['flat_trades']} | "
+            f"TotalPnL={summary['total_profit_loss']:.2f} | "
+            f"AvgPnL={summary['avg_profit_loss_per_trade']:.2f}"
+        )
+        for t in summary["trade_list"]:
+            print(
+                f"[BOS_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
+                f"TradeID={t['trade_id']} | Entry={t['entry_price']} | Exit={t['exit_price']} | "
+                f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
+            )
+    print("[BOS_V1] FINAL SUMMARY END")
 
 
 def evaluate_bos_score_v1(
@@ -409,7 +437,7 @@ def evaluate_bos_score_v1(
         state["open_position"] = None
         status = "exited"
         print(f"[BOS_V1] exit triggered {symbol} {timeframe} @ {close_px}")
-        summary = _trade_summary(state)
+        summary = _trade_summary(state, symbol, timeframe)
 
         # Print last trade result
         last_trade = summary["trade_list"][-1] if summary["trade_list"] else None
@@ -471,8 +499,9 @@ def evaluate_bos_score_v1(
         needed_cash = cfg["shares_per_trade"] * (open_px if open_px is not None else (close_px or 0.0))
         if state["cash"] >= needed_cash:
             state["trade_id_counter"] += 1
+            trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
             state["pending_entry"] = {
-                "trade_id": state["trade_id_counter"],
+                "trade_id": trade_id,
                 "signal_ts": last_ts,
                 "signal_ts_et": last_ts_et,
                 "shares": cfg["shares_per_trade"],
@@ -539,7 +568,7 @@ def evaluate_bos_score_v1(
     }
     state["signals"].append(signal)
 
-    summary = _trade_summary(state)
+    summary = _trade_summary(state, symbol, timeframe)
     snapshot = {
         "id": "bos_score_v1",
         "symbol": symbol,
@@ -565,6 +594,7 @@ def evaluate_bos_score_v1(
         "close_strength_value": close_strength_val,
         "break_distance_value": break_distance_val,
         "cash": state["cash"],
+        "current_cash": state["cash"],
         "position_open": state["open_position"] is not None,
         "pending_entry": deepcopy(state["pending_entry"]),
         "shares_per_trade": cfg["shares_per_trade"],
@@ -577,6 +607,7 @@ def evaluate_bos_score_v1(
         "trade_summary": summary,
         "trade_list": summary["trade_list"],
         "total_profit_loss": summary["total_profit_loss"],
+        "avg_profit_loss_per_trade": summary["avg_profit_loss_per_trade"],
         "open_position_summary": deepcopy(state["open_position"]),
     }
     state["latest_snapshot"] = snapshot
