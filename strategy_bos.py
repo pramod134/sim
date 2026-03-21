@@ -409,6 +409,35 @@ def evaluate_bos_score_v1(
         state["open_position"] = None
         status = "exited"
         print(f"[BOS_V1] exit triggered {symbol} {timeframe} @ {close_px}")
+        summary = _trade_summary(state)
+
+        # Print last trade result
+        last_trade = summary["trade_list"][-1] if summary["trade_list"] else None
+        if last_trade:
+            print(
+                f"[BOS_V1] TRADE RESULT: ID={last_trade['trade_id']} | "
+                f"PnL={last_trade['gross_pnl']:.2f} | Result={last_trade['result']}"
+            )
+
+        # Print running total PnL
+        print(f"[BOS_V1] TOTAL PnL: {summary['total_profit_loss']:.2f}")
+
+        # Print summary stats
+        print(
+            f"[BOS_V1] SUMMARY: Trades={summary['total_trades']} | "
+            f"Wins={summary['winning_trades']} | "
+            f"Losses={summary['losing_trades']} | "
+            f"Flat={summary['flat_trades']}"
+        )
+
+        # Print ALL trades (compact format)
+        print("[BOS_V1] ALL TRADES:")
+        for t in summary["trade_list"]:
+            print(
+                f"[BOS_V1] TRADE {t['trade_id']} | "
+                f"Entry={t['entry_price']} Exit={t['exit_price']} | "
+                f"PnL={t['gross_pnl']:.2f} | {t['result']}"
+            )
 
     # 4) Entry signal generation.
     if not cfg["enabled"]:
