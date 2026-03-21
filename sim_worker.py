@@ -20,6 +20,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sim_worker")
 logger.disabled = True  # Logs disabled; keep strategy logs only
+# Silence per-request HTTP client logs such as:
+# "HTTP Request: POST ... \"HTTP/1.1 200 OK\""
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 # ----------------------------- Supabase REST -----------------------------
