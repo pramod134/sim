@@ -1,3 +1,4 @@
+from strategy_bos import evaluate_bos_score_v1
 from typing import Dict, Any, List, Optional
 
 
@@ -455,6 +456,19 @@ def evaluate_strategies(
         )
         if brt:
             strategies.append(brt)
+    except Exception:
+        pass
+
+    # --- STRATEGY 2: BOS Score V1 ---
+    try:
+        bos_v1 = evaluate_bos_score_v1(
+            symbol=symbol,
+            timeframe=timeframe,
+            candles=candles,
+            swings=swings,
+        )
+        if bos_v1:
+            strategies.append(bos_v1)
     except Exception:
         pass
 
