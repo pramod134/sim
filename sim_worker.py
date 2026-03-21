@@ -19,6 +19,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [sim_worker] %(message)s",
 )
 logger = logging.getLogger("sim_worker")
+logger.disabled = True  # Logs disabled; keep strategy logs only
 
 
 # ----------------------------- Supabase REST -----------------------------

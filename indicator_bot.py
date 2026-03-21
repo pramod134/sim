@@ -1338,14 +1338,14 @@ class IndicatorBot:
                 )
 
                 meta = fvg_pool.get("meta") or {}
-                print(
-                    f"[FVG_POOL] Updated {sym_upper} "
-                    f"raw={meta.get('raw_fvg_count', 0)} "
-                    f"eligible={meta.get('eligible_fvg_count', 0)} "
-                    f"bull_pools={meta.get('bullish_pool_count', 0)} "
-                    f"bear_pools={meta.get('bearish_pool_count', 0)}"
-                )
-                print(f"[FVG_POOL][FINAL] {json.dumps(fvg_pool, indent=2, default=str)}")
+                # print(
+                    # f"[FVG_POOL] Updated {sym_upper} "
+                    # f"raw={meta.get('raw_fvg_count', 0)} "
+                    # f"eligible={meta.get('eligible_fvg_count', 0)} "
+                    # f"bull_pools={meta.get('bullish_pool_count', 0)} "
+                    # f"bear_pools={meta.get('bearish_pool_count', 0)}"
+                # )
+                # print(f"[FVG_POOL][FINAL] {json.dumps(fvg_pool, indent=2, default=str)}")
 
             except Exception as e:
                 pass
