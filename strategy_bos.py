@@ -185,6 +185,18 @@ def _trade_summary(state: Dict[str, Any], symbol: Optional[str] = None, timefram
     losses = sum(1 for t in trades if (_safe_float(t.get("gross_pnl"), 0.0) or 0.0) < 0)
     flats = len(trades) - wins - losses
     avg_profit_loss_per_trade = (total_profit_loss / len(trades)) if trades else 0.0
+    long_trades = [t for t in trades if str(t.get("side") or "").lower() == "long"]
+    short_trades = [t for t in trades if str(t.get("side") or "").lower() == "short"]
+
+    def _side_summary(side_trades: List[Dict[str, Any]], side: str) -> Dict[str, Any]:
+        side_total_pl = sum((_safe_float(t.get("gross_pnl"), 0.0) or 0.0) for t in side_trades)
+        return {
+            "side": side,
+            "timeframe": timeframe,
+            "total_trades": len(side_trades),
+            "total_profit_loss": side_total_pl,
+        }
+
     return {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -196,6 +208,8 @@ def _trade_summary(state: Dict[str, Any], symbol: Optional[str] = None, timefram
         "flat_trades": flats,
         "total_profit_loss": total_profit_loss,
         "avg_profit_loss_per_trade": avg_profit_loss_per_trade,
+        "long_summary": _side_summary(long_trades, "long"),
+        "short_summary": _side_summary(short_trades, "short"),
         "trade_list": _trade_list_with_pl(trades),
     }
 
@@ -213,6 +227,14 @@ def print_bos_final_summaries() -> None:
             f"TotalPnL={summary['total_profit_loss']:.2f} | "
             f"AvgPnL={summary['avg_profit_loss_per_trade']:.2f}"
         )
+        for side_key in ("long_summary", "short_summary"):
+            side_summary = summary.get(side_key) or {}
+            print(
+                f"[BOS_V1] FINAL SIDE SUMMARY | Symbol={symbol} | TF={timeframe} | "
+                f"Side={side_summary.get('side')} | "
+                f"TotalTrades={int(side_summary.get('total_trades', 0) or 0)} | "
+                f"TotalPnL={float(side_summary.get('total_profit_loss', 0.0) or 0.0):.2f}"
+            )
         for t in summary["trade_list"]:
             print(
                 f"[BOS_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
