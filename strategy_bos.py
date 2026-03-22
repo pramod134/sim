@@ -160,7 +160,11 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "symbol": t.get("symbol"),
                 "timeframe": t.get("timeframe"),
                 "entry_ts": t.get("entry_ts"),
+                "break_candle_ts": t.get("break_candle_ts"),
+                "break_candle_ts_et": t.get("break_candle_ts_et"),
+                "reference_swing_ts": t.get("reference_swing_ts"),
                 "exit_ts": t.get("exit_ts"),
+                "exit_swing_reference_ts": t.get("exit_swing_reference_ts"),
                 "entry_price": t.get("entry_price"),
                 "exit_price": t.get("exit_price"),
                 "shares": t.get("shares"),
@@ -211,6 +215,8 @@ def print_bos_final_summaries() -> None:
             print(
                 f"[BOS_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
                 f"TradeID={t['trade_id']} | Entry={t['entry_price']} | Exit={t['exit_price']} | "
+                f"BreakTS={t.get('break_candle_ts')} | RefSwingTS={t.get('reference_swing_ts')} | "
+                f"ExitTS={t.get('exit_ts')} | ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
             )
     print("[BOS_V1] FINAL SUMMARY END")
@@ -389,6 +395,9 @@ def evaluate_bos_score_v1(
             "status": "closed",
             "entry_ts": pos.get("entry_ts"),
             "entry_ts_et": pos.get("entry_ts_et"),
+            "break_candle_ts": pos.get("signal_ts"),
+            "break_candle_ts_et": pos.get("signal_ts_et"),
+            "reference_swing_ts": pos.get("entry_ref_swing_high_ts"),
             "entry_price": entry_price,
             "entry_reason": "bos_up_score_pass",
             "entry_ref_swing_high": pos.get("entry_ref_swing_high"),
@@ -423,6 +432,7 @@ def evaluate_bos_score_v1(
             "exit_reason": "close_below_recent_swing_low",
             "exit_ref_swing_low": recent_low_price,
             "exit_ref_swing_low_ts": recent_low_ts,
+            "exit_swing_reference_ts": recent_low_ts,
             "gross_pnl": gross_pnl,
             "gross_pnl_pct": gross_pnl_pct,
             "bars_held": pos.get("bars_held", 0),
@@ -444,6 +454,11 @@ def evaluate_bos_score_v1(
         if last_trade:
             print(
                 f"[BOS_V1] TRADE RESULT: ID={last_trade['trade_id']} | "
+                f"Symbol={symbol} | TF={timeframe} | "
+                f"BreakTS={last_trade.get('break_candle_ts')} | "
+                f"RefSwingTS={last_trade.get('reference_swing_ts')} | "
+                f"ExitTS={last_trade.get('exit_ts')} | "
+                f"ExitSwingRefTS={last_trade.get('exit_swing_reference_ts')} | "
                 f"PnL={last_trade['gross_pnl']:.2f} | Result={last_trade['result']}"
             )
 
@@ -463,6 +478,11 @@ def evaluate_bos_score_v1(
         for t in summary["trade_list"]:
             print(
                 f"[BOS_V1] TRADE {t['trade_id']} | "
+                f"TF={t.get('timeframe')} | "
+                f"BreakTS={t.get('break_candle_ts')} | "
+                f"RefSwingTS={t.get('reference_swing_ts')} | "
+                f"ExitTS={t.get('exit_ts')} | "
+                f"ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"Entry={t['entry_price']} Exit={t['exit_price']} | "
                 f"PnL={t['gross_pnl']:.2f} | {t['result']}"
             )
