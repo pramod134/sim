@@ -141,6 +141,7 @@ def _ensure_state(symbol: str, timeframe: str) -> Dict[str, Any]:
             "open_position": None,
             "pending_entry": None,
             "broken_swing_highs": set(),
+            "broken_swing_lows": set(),
             "trade_id_counter": 0,
             "signal_id_counter": 0,
             "completed_trades": [],
@@ -159,6 +160,7 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "trade_id": t.get("trade_id"),
                 "symbol": t.get("symbol"),
                 "timeframe": t.get("timeframe"),
+                "side": t.get("side"),
                 "entry_ts": t.get("entry_ts"),
                 "break_candle_ts": t.get("break_candle_ts"),
                 "break_candle_ts_et": t.get("break_candle_ts_et"),
@@ -214,7 +216,7 @@ def print_bos_final_summaries() -> None:
         for t in summary["trade_list"]:
             print(
                 f"[BOS_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
-                f"TradeID={t['trade_id']} | Entry={t['entry_price']} | Exit={t['exit_price']} | "
+                f"TradeID={t['trade_id']} | Side={t.get('side')} | Entry={t['entry_price']} | Exit={t['exit_price']} | "
                 f"BreakTS={t.get('break_candle_ts')} | RefSwingTS={t.get('reference_swing_ts')} | "
                 f"ExitTS={t.get('exit_ts')} | ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
@@ -257,52 +259,72 @@ def evaluate_bos_score_v1(
     if high_px is not None and low_px is not None:
         candle_range = high_px - low_px
 
-    close_strength_val = 0.0
+    close_strength_long = 0.0
     if candle_range is not None and candle_range > 0 and close_px is not None and low_px is not None:
-        close_strength_val = (close_px - low_px) / candle_range
+        close_strength_long = (close_px - low_px) / candle_range
 
-    break_distance_val = 0.0
+    close_strength_short = 0.0
+    if candle_range is not None and candle_range > 0 and close_px is not None and high_px is not None:
+        close_strength_short = (high_px - close_px) / candle_range
+
+    break_distance_long = 0.0
     if recent_high_price is not None and recent_high_price > 0 and close_px is not None:
-        break_distance_val = (close_px - recent_high_price) / recent_high_price
+        break_distance_long = (close_px - recent_high_price) / recent_high_price
 
-    momentum_pass = mom_val >= cfg["mom_threshold"]
-    volume_pass = vol_val >= cfg["vol_threshold"]
-    close_pass = bool(candle_range is not None and candle_range > 0 and close_strength_val >= cfg["close_threshold"])
-    break_pass = bool(recent_high_price is not None and recent_high_price > 0 and break_distance_val >= cfg["break_threshold"])
+    break_distance_short = 0.0
+    if recent_low_price is not None and recent_low_price > 0 and close_px is not None:
+        break_distance_short = (recent_low_price - close_px) / recent_low_price
 
-    score_total = 0.0
-    score_total += cfg["weight_momentum"] if momentum_pass else 0.0
-    score_total += cfg["weight_volume"] if volume_pass else 0.0
-    score_total += cfg["weight_close"] if close_pass else 0.0
-    score_total += cfg["weight_break"] if break_pass else 0.0
-    score_pass = score_total >= cfg["score_min"]
+    momentum_pass_long = mom_val >= cfg["mom_threshold"]
+    volume_pass_long = vol_val >= cfg["vol_threshold"]
+    close_pass_long = bool(candle_range is not None and candle_range > 0 and close_strength_long >= cfg["close_threshold"])
+    break_pass_long = bool(recent_high_price is not None and recent_high_price > 0 and break_distance_long >= cfg["break_threshold"])
 
-    already_broken = False
-    bos_detected = False
+    momentum_pass_short = mom_val >= cfg["mom_threshold"]
+    volume_pass_short = vol_val >= cfg["vol_threshold"]
+    close_pass_short = bool(candle_range is not None and candle_range > 0 and close_strength_short >= cfg["close_threshold"])
+    break_pass_short = bool(recent_low_price is not None and recent_low_price > 0 and break_distance_short >= cfg["break_threshold"])
+
+    score_total_long = 0.0
+    score_total_long += cfg["weight_momentum"] if momentum_pass_long else 0.0
+    score_total_long += cfg["weight_volume"] if volume_pass_long else 0.0
+    score_total_long += cfg["weight_close"] if close_pass_long else 0.0
+    score_total_long += cfg["weight_break"] if break_pass_long else 0.0
+    score_pass_long = score_total_long >= cfg["score_min"]
+
+    score_total_short = 0.0
+    score_total_short += cfg["weight_momentum"] if momentum_pass_short else 0.0
+    score_total_short += cfg["weight_volume"] if volume_pass_short else 0.0
+    score_total_short += cfg["weight_close"] if close_pass_short else 0.0
+    score_total_short += cfg["weight_break"] if break_pass_short else 0.0
+    score_pass_short = score_total_short >= cfg["score_min"]
+
+    long_already_broken = False
+    short_already_broken = False
+    long_bos_detected = False
+    short_bos_detected = False
     skip_reason = ""
     swing_high_key = None
+    swing_low_key = None
 
-    if recent_high_price is None or recent_high_ts is None:
-        skip_reason = "no_valid_recent_swing_high"
-    else:
+    if recent_high_price is not None and recent_high_ts is not None:
         swing_high_key = f"{recent_high_ts}|{recent_high_price}"
-        already_broken = swing_high_key in state["broken_swing_highs"]
-        if already_broken:
-            skip_reason = "swing_high_already_broken"
-        elif close_px is not None and close_px > recent_high_price:
-            bos_detected = True
-        else:
-            skip_reason = "bos_not_detected"
+        long_already_broken = swing_high_key in state["broken_swing_highs"]
+        if not long_already_broken and close_px is not None and close_px > recent_high_price:
+            long_bos_detected = True
 
-    if recent_low_price is None or recent_low_ts is None:
-        if not skip_reason:
-            skip_reason = "no_valid_recent_swing_low"
+    if recent_low_price is not None and recent_low_ts is not None:
+        swing_low_key = f"{recent_low_ts}|{recent_low_price}"
+        short_already_broken = swing_low_key in state["broken_swing_lows"]
+        if not short_already_broken and close_px is not None and close_px < recent_low_price:
+            short_bos_detected = True
 
     status = "idle"
 
     # 1) Fill pending entry at current candle open.
     if state["pending_entry"] and open_px is not None:
         pending = state["pending_entry"]
+        side = pending.get("side", "long")
         shares = _safe_int(pending.get("shares"), cfg["shares_per_trade"])
         position_cost = shares * open_px
         if position_cost <= state["cash"]:
@@ -311,14 +333,14 @@ def evaluate_bos_score_v1(
                 "entry_ts": last_ts,
                 "entry_ts_et": last_ts_et,
                 "entry_price": open_px,
-                "entry_reason": "bos_up_score_pass",
+                "entry_reason": "bos_up_score_pass" if side == "long" else "bos_down_score_pass",
                 "entry_ref_swing_high": pending.get("entry_ref_swing_high"),
                 "entry_ref_swing_high_ts": pending.get("entry_ref_swing_high_ts"),
                 "entry_ref_swing_low": pending.get("entry_ref_swing_low"),
                 "entry_ref_swing_low_ts": pending.get("entry_ref_swing_low_ts"),
-                "entry_bos_type": "bos_up",
-                "entry_bos_level": pending.get("entry_ref_swing_high"),
-                "entry_bos_level_ts": pending.get("entry_ref_swing_high_ts"),
+                "entry_bos_type": "bos_up" if side == "long" else "bos_down",
+                "entry_bos_level": pending.get("entry_ref_swing_high") if side == "long" else pending.get("entry_ref_swing_low"),
+                "entry_bos_level_ts": pending.get("entry_ref_swing_high_ts") if side == "long" else pending.get("entry_ref_swing_low_ts"),
                 "bos_score_total": pending.get("score_total", 0.0),
                 "bos_score_threshold": cfg["score_min"],
                 "bos_score_pass": pending.get("score_pass", False),
@@ -343,13 +365,13 @@ def evaluate_bos_score_v1(
                 "bars_held": 0,
                 "signal_ts": pending.get("signal_ts"),
                 "signal_ts_et": pending.get("signal_ts_et"),
-                "side": "long",
+                "side": side,
                 "notes": pending.get("notes", ""),
             }
             state["cash"] -= position_cost
             state["pending_entry"] = None
             status = "in_position"
-            print(f"[BOS_V1] pending entry filled {symbol} {timeframe} @ {open_px}")
+            print(f"[BOS_V1] pending {side} entry filled {symbol} {timeframe} @ {open_px}")
         else:
             state["pending_entry"] = None
             status = "skipped"
@@ -368,15 +390,34 @@ def evaluate_bos_score_v1(
         status = "in_position"
 
     # 3) Exit check at close.
-    if state["open_position"] and close_px is not None and recent_low_price is not None and close_px < recent_low_price:
+    exit_long = (
+        state["open_position"]
+        and state["open_position"].get("side", "long") == "long"
+        and close_px is not None
+        and recent_low_price is not None
+        and close_px < recent_low_price
+    )
+    exit_short = (
+        state["open_position"]
+        and state["open_position"].get("side", "long") == "short"
+        and close_px is not None
+        and recent_high_price is not None
+        and close_px > recent_high_price
+    )
+    if exit_long or exit_short:
         pos = state["open_position"]
+        pos_side = pos.get("side", "long")
         shares = _safe_int(pos.get("shares"), cfg["shares_per_trade"])
         proceeds = shares * close_px
         state["cash"] += proceeds
 
         entry_price = _safe_float(pos.get("entry_price"), 0.0) or 0.0
-        gross_pnl = (close_px - entry_price) * shares
-        gross_pnl_pct = ((close_px - entry_price) / entry_price) if entry_price > 0 else 0.0
+        if pos_side == "short":
+            gross_pnl = (entry_price - close_px) * shares
+            gross_pnl_pct = ((entry_price - close_px) / entry_price) if entry_price > 0 else 0.0
+        else:
+            gross_pnl = (close_px - entry_price) * shares
+            gross_pnl_pct = ((close_px - entry_price) / entry_price) if entry_price > 0 else 0.0
 
         entry_dt = _parse_ts(pos.get("entry_ts"))
         exit_dt = _parse_ts(last_ts)
@@ -391,15 +432,15 @@ def evaluate_bos_score_v1(
             "trade_id": pos.get("trade_id"),
             "symbol": symbol,
             "timeframe": timeframe,
-            "side": "long",
+            "side": pos_side,
             "status": "closed",
             "entry_ts": pos.get("entry_ts"),
             "entry_ts_et": pos.get("entry_ts_et"),
             "break_candle_ts": pos.get("signal_ts"),
             "break_candle_ts_et": pos.get("signal_ts_et"),
-            "reference_swing_ts": pos.get("entry_ref_swing_high_ts"),
+            "reference_swing_ts": pos.get("entry_ref_swing_high_ts") if pos_side == "long" else pos.get("entry_ref_swing_low_ts"),
             "entry_price": entry_price,
-            "entry_reason": "bos_up_score_pass",
+            "entry_reason": "bos_up_score_pass" if pos_side == "long" else "bos_down_score_pass",
             "entry_ref_swing_high": pos.get("entry_ref_swing_high"),
             "entry_ref_swing_high_ts": pos.get("entry_ref_swing_high_ts"),
             "entry_ref_swing_low": pos.get("entry_ref_swing_low"),
@@ -429,16 +470,18 @@ def evaluate_bos_score_v1(
             "exit_ts": last_ts,
             "exit_ts_et": last_ts_et,
             "exit_price": close_px,
-            "exit_reason": "close_below_recent_swing_low",
+            "exit_reason": "close_below_recent_swing_low" if pos_side == "long" else "close_above_recent_swing_high",
             "exit_ref_swing_low": recent_low_price,
             "exit_ref_swing_low_ts": recent_low_ts,
-            "exit_swing_reference_ts": recent_low_ts,
+            "exit_ref_swing_high": recent_high_price,
+            "exit_ref_swing_high_ts": recent_high_ts,
+            "exit_swing_reference_ts": recent_low_ts if pos_side == "long" else recent_high_ts,
             "gross_pnl": gross_pnl,
             "gross_pnl_pct": gross_pnl_pct,
             "bars_held": pos.get("bars_held", 0),
             "holding_minutes": holding_minutes,
-            "mae": entry_price - lowest,
-            "mfe": highest - entry_price,
+            "mae": (entry_price - lowest) if pos_side == "long" else (highest - entry_price),
+            "mfe": (highest - entry_price) if pos_side == "long" else (entry_price - lowest),
             "lowest_price_during_trade": lowest,
             "highest_price_during_trade": highest,
             "notes": pos.get("notes", ""),
@@ -446,7 +489,7 @@ def evaluate_bos_score_v1(
         state["completed_trades"].append(trade)
         state["open_position"] = None
         status = "exited"
-        print(f"[BOS_V1] exit triggered {symbol} {timeframe} @ {close_px}")
+        print(f"[BOS_V1] exit triggered {pos_side.upper()} {symbol} {timeframe} @ {close_px}")
         summary = _trade_summary(state, symbol, timeframe)
 
         # Print last trade result
@@ -454,6 +497,7 @@ def evaluate_bos_score_v1(
         if last_trade:
             print(
                 f"[BOS_V1] TRADE RESULT: ID={last_trade['trade_id']} | "
+                f"Side={last_trade.get('side')} | "
                 f"Symbol={symbol} | TF={timeframe} | "
                 f"BreakTS={last_trade.get('break_candle_ts')} | "
                 f"RefSwingTS={last_trade.get('reference_swing_ts')} | "
@@ -478,6 +522,7 @@ def evaluate_bos_score_v1(
         for t in summary["trade_list"]:
             print(
                 f"[BOS_V1] TRADE {t['trade_id']} | "
+                f"Side={t.get('side')} | "
                 f"TF={t.get('timeframe')} | "
                 f"BreakTS={t.get('break_candle_ts')} | "
                 f"RefSwingTS={t.get('reference_swing_ts')} | "
@@ -501,17 +546,78 @@ def evaluate_bos_score_v1(
         if status not in {"exited"}:
             status = "pending_entry"
 
-    if bos_detected and swing_high_key:
+    if long_bos_detected and swing_high_key:
         if swing_high_key in state["broken_swing_highs"]:
-            print(f"[BOS_V1] repeated broken swing ignored {symbol} {timeframe}")
+            print(f"[BOS_V1] repeated broken swing high ignored {symbol} {timeframe}")
         else:
             state["broken_swing_highs"].add(swing_high_key)
-            print(f"[BOS_V1] BOS detected {symbol} {timeframe} break={recent_high_price}")
+            print(f"[BOS_V1] BOS detected LONG {symbol} {timeframe} break={recent_high_price}")
+
+    if short_bos_detected and swing_low_key:
+        if swing_low_key in state["broken_swing_lows"]:
+            print(f"[BOS_V1] repeated broken swing low ignored {symbol} {timeframe}")
+        else:
+            state["broken_swing_lows"].add(swing_low_key)
+            print(f"[BOS_V1] BOS detected SHORT {symbol} {timeframe} break={recent_low_price}")
+
+    chosen_side = "none"
+    chosen_score_total = 0.0
+    chosen_score_pass = False
+    chosen_momentum_pass = False
+    chosen_volume_pass = False
+    chosen_close_pass = False
+    chosen_break_pass = False
+    chosen_close_strength = 0.0
+    chosen_break_distance = 0.0
+    chosen_bos_detected = False
+    chosen_signal_type = "none"
+
+    if long_bos_detected and short_bos_detected:
+        if score_total_long > score_total_short:
+            chosen_side = "long"
+        elif score_total_short > score_total_long:
+            chosen_side = "short"
+        else:
+            skip_reason = "conflicting_long_short_signal"
+    elif long_bos_detected:
+        chosen_side = "long"
+    elif short_bos_detected:
+        chosen_side = "short"
+    elif not skip_reason:
+        if recent_high_price is None or recent_high_ts is None:
+            skip_reason = "no_valid_recent_swing_high"
+        elif recent_low_price is None or recent_low_ts is None:
+            skip_reason = "no_valid_recent_swing_low"
+        else:
+            skip_reason = "bos_not_detected"
+
+    if chosen_side == "long":
+        chosen_score_total = score_total_long
+        chosen_score_pass = score_pass_long
+        chosen_momentum_pass = momentum_pass_long
+        chosen_volume_pass = volume_pass_long
+        chosen_close_pass = close_pass_long
+        chosen_break_pass = break_pass_long
+        chosen_close_strength = close_strength_long
+        chosen_break_distance = break_distance_long
+        chosen_bos_detected = long_bos_detected
+        chosen_signal_type = "bos_up_check"
+    elif chosen_side == "short":
+        chosen_score_total = score_total_short
+        chosen_score_pass = score_pass_short
+        chosen_momentum_pass = momentum_pass_short
+        chosen_volume_pass = volume_pass_short
+        chosen_close_pass = close_pass_short
+        chosen_break_pass = break_pass_short
+        chosen_close_strength = close_strength_short
+        chosen_break_distance = break_distance_short
+        chosen_bos_detected = short_bos_detected
+        chosen_signal_type = "bos_down_check"
 
     if (
-        bos_detected
+        chosen_bos_detected
         and cfg["enabled"]
-        and score_pass
+        and chosen_score_pass
         and not state["open_position"]
         and not state["pending_entry"]
         and cfg["max_open_positions"] >= 1
@@ -522,6 +628,7 @@ def evaluate_bos_score_v1(
             trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
             state["pending_entry"] = {
                 "trade_id": trade_id,
+                "side": chosen_side,
                 "signal_ts": last_ts,
                 "signal_ts_et": last_ts_et,
                 "shares": cfg["shares_per_trade"],
@@ -529,26 +636,26 @@ def evaluate_bos_score_v1(
                 "entry_ref_swing_high_ts": recent_high_ts,
                 "entry_ref_swing_low": recent_low_price,
                 "entry_ref_swing_low_ts": recent_low_ts,
-                "score_total": score_total,
-                "score_pass": score_pass,
-                "momentum_pass": momentum_pass,
-                "volume_pass": volume_pass,
-                "close_pass": close_pass,
-                "break_pass": break_pass,
+                "score_total": chosen_score_total,
+                "score_pass": chosen_score_pass,
+                "momentum_pass": chosen_momentum_pass,
+                "volume_pass": chosen_volume_pass,
+                "close_pass": chosen_close_pass,
+                "break_pass": chosen_break_pass,
                 "mom_value": mom_val,
                 "vol_value": vol_val,
-                "close_strength_value": close_strength_val,
-                "break_distance_value": break_distance_val,
-                "notes": "first_break_of_unbroken_swing_high",
+                "close_strength_value": chosen_close_strength,
+                "break_distance_value": chosen_break_distance,
+                "notes": "first_break_of_unbroken_swing_high" if chosen_side == "long" else "first_break_of_unbroken_swing_low",
             }
             status = "signal_detected"
             skip_reason = ""
-            print(f"[BOS_V1] pending entry created {symbol} {timeframe}")
+            print(f"[BOS_V1] pending {chosen_side} entry created {symbol} {timeframe}")
         else:
             skip_reason = "insufficient_cash"
             status = "skipped"
             print(f"[BOS_V1] signal skipped with reason insufficient_cash {symbol} {timeframe}")
-    elif bos_detected and not score_pass and not skip_reason:
+    elif chosen_bos_detected and not chosen_score_pass and not skip_reason:
         skip_reason = "score_below_threshold"
         status = "skipped"
     elif status == "idle" and skip_reason:
@@ -561,7 +668,8 @@ def evaluate_bos_score_v1(
         "ts_et": last_ts_et,
         "symbol": symbol,
         "timeframe": timeframe,
-        "signal_type": "bos_up_check",
+        "signal_type": chosen_signal_type,
+        "signal_side": chosen_side,
         "recent_swing_high": recent_high_price,
         "recent_swing_high_ts": recent_high_ts,
         "recent_swing_low": recent_low_price,
@@ -570,19 +678,22 @@ def evaluate_bos_score_v1(
         "high": high_px,
         "low": low_px,
         "close": close_px,
-        "bos_detected": bos_detected,
-        "already_broken": already_broken,
-        "score_total": score_total,
+        "bos_detected": chosen_bos_detected,
+        "long_bos_detected": long_bos_detected,
+        "short_bos_detected": short_bos_detected,
+        "chosen_side": chosen_side,
+        "already_broken": long_already_broken if chosen_side == "long" else short_already_broken if chosen_side == "short" else False,
+        "score_total": chosen_score_total,
         "score_threshold": cfg["score_min"],
-        "score_pass": score_pass,
-        "mom_pass": momentum_pass,
-        "vol_pass": volume_pass,
-        "close_pass": close_pass,
-        "break_pass": break_pass,
+        "score_pass": chosen_score_pass,
+        "mom_pass": chosen_momentum_pass,
+        "vol_pass": chosen_volume_pass,
+        "close_pass": chosen_close_pass,
+        "break_pass": chosen_break_pass,
         "mom_value": mom_val,
         "vol_value": vol_val,
-        "close_strength_value": close_strength_val,
-        "break_distance_value": break_distance_val,
+        "close_strength_value": chosen_close_strength,
+        "break_distance_value": chosen_break_distance,
         "skip_reason": skip_reason,
         "notes": "",
     }
@@ -596,26 +707,31 @@ def evaluate_bos_score_v1(
         "last_eval_ts": last_ts,
         "last_eval_ts_et": last_ts_et,
         "status": status,
-        "bos_detected": bos_detected,
+        "bos_detected": chosen_bos_detected,
+        "long_bos_detected": long_bos_detected,
+        "short_bos_detected": short_bos_detected,
+        "chosen_side": chosen_side,
         "recent_swing_high": recent_high_price,
         "recent_swing_high_ts": recent_high_ts,
         "recent_swing_low": recent_low_price,
         "recent_swing_low_ts": recent_low_ts,
         "score_enabled": cfg["enabled"],
-        "score_total": score_total,
+        "score_total": chosen_score_total,
         "score_threshold": cfg["score_min"],
-        "score_pass": score_pass,
-        "momentum_pass": momentum_pass,
-        "volume_pass": volume_pass,
-        "close_pass": close_pass,
-        "break_pass": break_pass,
+        "score_pass": chosen_score_pass,
+        "momentum_pass": chosen_momentum_pass,
+        "volume_pass": chosen_volume_pass,
+        "close_pass": chosen_close_pass,
+        "break_pass": chosen_break_pass,
         "momentum_value": mom_val,
         "volume_value": vol_val,
-        "close_strength_value": close_strength_val,
-        "break_distance_value": break_distance_val,
+        "close_strength_value": chosen_close_strength,
+        "break_distance_value": chosen_break_distance,
         "cash": state["cash"],
         "current_cash": state["cash"],
         "position_open": state["open_position"] is not None,
+        "open_position_side": (state["open_position"] or {}).get("side"),
+        "pending_entry_side": (state["pending_entry"] or {}).get("side"),
         "pending_entry": deepcopy(state["pending_entry"]),
         "shares_per_trade": cfg["shares_per_trade"],
         "initial_capital": cfg["initial_capital"],
