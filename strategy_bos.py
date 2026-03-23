@@ -165,6 +165,8 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "break_candle_ts": t.get("break_candle_ts"),
                 "break_candle_ts_et": t.get("break_candle_ts_et"),
                 "reference_swing_ts": t.get("reference_swing_ts"),
+                "reference_swing_score": t.get("reference_swing_score"),
+                "bos_score_total": t.get("bos_score_total"),
                 "exit_ts": t.get("exit_ts"),
                 "exit_swing_reference_ts": t.get("exit_swing_reference_ts"),
                 "entry_price": t.get("entry_price"),
@@ -240,6 +242,8 @@ def print_bos_final_summaries() -> None:
                 f"[BOS_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
                 f"TradeID={t['trade_id']} | Side={t.get('side')} | Entry={t['entry_price']} | Exit={t['exit_price']} | "
                 f"BreakTS={t.get('break_candle_ts')} | RefSwingTS={t.get('reference_swing_ts')} | "
+                f"RefSwingScore={t.get('reference_swing_score')} | "
+                f"BOSScore={t.get('bos_score_total')} | "
                 f"ExitTS={t.get('exit_ts')} | ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
             )
@@ -273,6 +277,8 @@ def evaluate_bos_score_v1(
     recent_low_price = _safe_float((recent_low or {}).get("price"))
     recent_high_ts = (recent_high or {}).get("ts")
     recent_low_ts = (recent_low or {}).get("ts")
+    recent_high_pivot_score = _safe_float(((recent_high or {}).get("pivot") or {}).get("score"))
+    recent_low_pivot_score = _safe_float(((recent_low or {}).get("pivot") or {}).get("score"))
 
     mom_val = _safe_float(last_candle.get("mom_atr"), 0.0) or 0.0
     vol_val = _safe_float(last_candle.get("vol_rel"), 0.0) or 0.0
@@ -358,8 +364,10 @@ def evaluate_bos_score_v1(
                 "entry_reason": "bos_up_score_pass" if side == "long" else "bos_down_score_pass",
                 "entry_ref_swing_high": pending.get("entry_ref_swing_high"),
                 "entry_ref_swing_high_ts": pending.get("entry_ref_swing_high_ts"),
+                "entry_ref_swing_high_score": pending.get("entry_ref_swing_high_score"),
                 "entry_ref_swing_low": pending.get("entry_ref_swing_low"),
                 "entry_ref_swing_low_ts": pending.get("entry_ref_swing_low_ts"),
+                "entry_ref_swing_low_score": pending.get("entry_ref_swing_low_score"),
                 "entry_bos_type": "bos_up" if side == "long" else "bos_down",
                 "entry_bos_level": pending.get("entry_ref_swing_high") if side == "long" else pending.get("entry_ref_swing_low"),
                 "entry_bos_level_ts": pending.get("entry_ref_swing_high_ts") if side == "long" else pending.get("entry_ref_swing_low_ts"),
@@ -461,12 +469,15 @@ def evaluate_bos_score_v1(
             "break_candle_ts": pos.get("signal_ts"),
             "break_candle_ts_et": pos.get("signal_ts_et"),
             "reference_swing_ts": pos.get("entry_ref_swing_high_ts") if pos_side == "long" else pos.get("entry_ref_swing_low_ts"),
+            "reference_swing_score": pos.get("entry_ref_swing_high_score") if pos_side == "long" else pos.get("entry_ref_swing_low_score"),
             "entry_price": entry_price,
             "entry_reason": "bos_up_score_pass" if pos_side == "long" else "bos_down_score_pass",
             "entry_ref_swing_high": pos.get("entry_ref_swing_high"),
             "entry_ref_swing_high_ts": pos.get("entry_ref_swing_high_ts"),
+            "entry_ref_swing_high_score": pos.get("entry_ref_swing_high_score"),
             "entry_ref_swing_low": pos.get("entry_ref_swing_low"),
             "entry_ref_swing_low_ts": pos.get("entry_ref_swing_low_ts"),
+            "entry_ref_swing_low_score": pos.get("entry_ref_swing_low_score"),
             "entry_bos_type": pos.get("entry_bos_type"),
             "entry_bos_level": pos.get("entry_bos_level"),
             "entry_bos_level_ts": pos.get("entry_bos_level_ts"),
@@ -523,6 +534,8 @@ def evaluate_bos_score_v1(
                 f"Symbol={symbol} | TF={timeframe} | "
                 f"BreakTS={last_trade.get('break_candle_ts')} | "
                 f"RefSwingTS={last_trade.get('reference_swing_ts')} | "
+                f"RefSwingScore={last_trade.get('reference_swing_score')} | "
+                f"BOSScore={last_trade.get('bos_score_total')} | "
                 f"ExitTS={last_trade.get('exit_ts')} | "
                 f"ExitSwingRefTS={last_trade.get('exit_swing_reference_ts')} | "
                 f"PnL={last_trade['gross_pnl']:.2f} | Result={last_trade['result']}"
@@ -548,6 +561,8 @@ def evaluate_bos_score_v1(
                 f"TF={t.get('timeframe')} | "
                 f"BreakTS={t.get('break_candle_ts')} | "
                 f"RefSwingTS={t.get('reference_swing_ts')} | "
+                f"RefSwingScore={t.get('reference_swing_score')} | "
+                f"BOSScore={t.get('bos_score_total')} | "
                 f"ExitTS={t.get('exit_ts')} | "
                 f"ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"Entry={t['entry_price']} Exit={t['exit_price']} | "
@@ -656,8 +671,10 @@ def evaluate_bos_score_v1(
                 "shares": cfg["shares_per_trade"],
                 "entry_ref_swing_high": recent_high_price,
                 "entry_ref_swing_high_ts": recent_high_ts,
+                "entry_ref_swing_high_score": recent_high_pivot_score,
                 "entry_ref_swing_low": recent_low_price,
                 "entry_ref_swing_low_ts": recent_low_ts,
+                "entry_ref_swing_low_score": recent_low_pivot_score,
                 "score_total": chosen_score_total,
                 "score_pass": chosen_score_pass,
                 "momentum_pass": chosen_momentum_pass,
