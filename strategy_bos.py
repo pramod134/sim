@@ -167,6 +167,8 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "reference_swing_ts": t.get("reference_swing_ts"),
                 "reference_swing_score": t.get("reference_swing_score"),
                 "bos_score_total": t.get("bos_score_total"),
+                "bos_close_threshold": t.get("bos_close_threshold"),
+                "bos_break_threshold": t.get("bos_break_threshold"),
                 "exit_ts": t.get("exit_ts"),
                 "exit_swing_reference_ts": t.get("exit_swing_reference_ts"),
                 "entry_price": t.get("entry_price"),
@@ -536,6 +538,8 @@ def evaluate_bos_score_v1(
                 f"RefSwingTS={last_trade.get('reference_swing_ts')} | "
                 f"RefSwingScore={last_trade.get('reference_swing_score')} | "
                 f"BOSScore={last_trade.get('bos_score_total')} | "
+                f"BOSCloseThreshold={last_trade.get('bos_close_threshold')} | "
+                f"BOSBreakThreshold={last_trade.get('bos_break_threshold')} | "
                 f"ExitTS={last_trade.get('exit_ts')} | "
                 f"ExitSwingRefTS={last_trade.get('exit_swing_reference_ts')} | "
                 f"PnL={last_trade['gross_pnl']:.2f} | Result={last_trade['result']}"
@@ -563,6 +567,8 @@ def evaluate_bos_score_v1(
                 f"RefSwingTS={t.get('reference_swing_ts')} | "
                 f"RefSwingScore={t.get('reference_swing_score')} | "
                 f"BOSScore={t.get('bos_score_total')} | "
+                f"BOSCloseThreshold={t.get('bos_close_threshold')} | "
+                f"BOSBreakThreshold={t.get('bos_break_threshold')} | "
                 f"ExitTS={t.get('exit_ts')} | "
                 f"ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"Entry={t['entry_price']} Exit={t['exit_price']} | "
