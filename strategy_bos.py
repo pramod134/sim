@@ -533,63 +533,7 @@ def evaluate_bos_score_v1(
         state["open_position"] = None
         status = "exited"
         print(f"[BOS_V1] exit triggered {pos_side.upper()} {symbol} {timeframe} @ {close_px}")
-        summary = _trade_summary(state, symbol, timeframe)
-
-        # Print last trade result
-        last_trade = summary["trade_list"][-1] if summary["trade_list"] else None
-        if last_trade:
-            print(
-                f"[BOS_V1] TRADE RESULT: ID={last_trade['trade_id']} | "
-                f"Side={last_trade.get('side')} | "
-                f"Symbol={symbol} | TF={timeframe} | "
-                f"BreakTS={last_trade.get('break_candle_ts')} | "
-                f"RefSwingTS={last_trade.get('reference_swing_ts')} | "
-                f"RefSwingScore={last_trade.get('reference_swing_score')} | "
-                f"BOSScore={last_trade.get('bos_score_total')} | "
-                f"MomVal={last_trade.get('bos_momentum_value')} | "
-                f"VolVal={last_trade.get('bos_volume_value')} | "
-                f"CloseStrength={last_trade.get('bos_close_strength_value')} | "
-                f"BreakDistance={last_trade.get('bos_break_distance_value')} | "
-                f"BOSCloseThreshold={last_trade.get('bos_close_threshold')} | "
-                f"BOSBreakThreshold={last_trade.get('bos_break_threshold')} | "
-                f"ExitTS={last_trade.get('exit_ts')} | "
-                f"ExitSwingRefTS={last_trade.get('exit_swing_reference_ts')} | "
-                f"PnL={last_trade['gross_pnl']:.2f} | Result={last_trade['result']}"
-            )
-
-        # Print running total PnL
-        print(f"[BOS_V1] TOTAL PnL: {summary['total_profit_loss']:.2f}")
-
-        # Print summary stats
-        print(
-            f"[BOS_V1] SUMMARY: Trades={summary['total_trades']} | "
-            f"Wins={summary['winning_trades']} | "
-            f"Losses={summary['losing_trades']} | "
-            f"Flat={summary['flat_trades']}"
-        )
-
-        # Print ALL trades (compact format)
-        print("[BOS_V1] ALL TRADES:")
-        for t in summary["trade_list"]:
-            print(
-                f"[BOS_V1] TRADE {t['trade_id']} | "
-                f"Side={t.get('side')} | "
-                f"TF={t.get('timeframe')} | "
-                f"BreakTS={t.get('break_candle_ts')} | "
-                f"RefSwingTS={t.get('reference_swing_ts')} | "
-                f"RefSwingScore={t.get('reference_swing_score')} | "
-                f"BOSScore={t.get('bos_score_total')} | "
-                f"MomVal={t.get('bos_momentum_value')} | "
-                f"VolVal={t.get('bos_volume_value')} | "
-                f"CloseStrength={t.get('bos_close_strength_value')} | "
-                f"BreakDistance={t.get('bos_break_distance_value')} | "
-                f"BOSCloseThreshold={t.get('bos_close_threshold')} | "
-                f"BOSBreakThreshold={t.get('bos_break_threshold')} | "
-                f"ExitTS={t.get('exit_ts')} | "
-                f"ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
-                f"Entry={t['entry_price']} Exit={t['exit_price']} | "
-                f"PnL={t['gross_pnl']:.2f} | {t['result']}"
-            )
+        # End-of-run reporting is handled by print_bos_final_summaries().
 
     # 4) Entry signal generation.
     if not cfg["enabled"]:
