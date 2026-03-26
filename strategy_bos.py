@@ -169,6 +169,10 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "bos_score_total": t.get("bos_score_total"),
                 "bos_close_threshold": t.get("bos_close_threshold"),
                 "bos_break_threshold": t.get("bos_break_threshold"),
+                "bos_momentum_value": t.get("bos_momentum_value"),
+                "bos_volume_value": t.get("bos_volume_value"),
+                "bos_close_strength_value": t.get("bos_close_strength_value"),
+                "bos_break_distance_value": t.get("bos_break_distance_value"),
                 "exit_ts": t.get("exit_ts"),
                 "exit_swing_reference_ts": t.get("exit_swing_reference_ts"),
                 "entry_price": t.get("entry_price"),
@@ -246,6 +250,10 @@ def print_bos_final_summaries() -> None:
                 f"BreakTS={t.get('break_candle_ts')} | RefSwingTS={t.get('reference_swing_ts')} | "
                 f"RefSwingScore={t.get('reference_swing_score')} | "
                 f"BOSScore={t.get('bos_score_total')} | "
+                f"MomVal={t.get('bos_momentum_value')} | "
+                f"VolVal={t.get('bos_volume_value')} | "
+                f"CloseStrength={t.get('bos_close_strength_value')} | "
+                f"BreakDistance={t.get('bos_break_distance_value')} | "
                 f"ExitTS={t.get('exit_ts')} | ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
             )
@@ -538,6 +546,10 @@ def evaluate_bos_score_v1(
                 f"RefSwingTS={last_trade.get('reference_swing_ts')} | "
                 f"RefSwingScore={last_trade.get('reference_swing_score')} | "
                 f"BOSScore={last_trade.get('bos_score_total')} | "
+                f"MomVal={last_trade.get('bos_momentum_value')} | "
+                f"VolVal={last_trade.get('bos_volume_value')} | "
+                f"CloseStrength={last_trade.get('bos_close_strength_value')} | "
+                f"BreakDistance={last_trade.get('bos_break_distance_value')} | "
                 f"BOSCloseThreshold={last_trade.get('bos_close_threshold')} | "
                 f"BOSBreakThreshold={last_trade.get('bos_break_threshold')} | "
                 f"ExitTS={last_trade.get('exit_ts')} | "
@@ -567,6 +579,10 @@ def evaluate_bos_score_v1(
                 f"RefSwingTS={t.get('reference_swing_ts')} | "
                 f"RefSwingScore={t.get('reference_swing_score')} | "
                 f"BOSScore={t.get('bos_score_total')} | "
+                f"MomVal={t.get('bos_momentum_value')} | "
+                f"VolVal={t.get('bos_volume_value')} | "
+                f"CloseStrength={t.get('bos_close_strength_value')} | "
+                f"BreakDistance={t.get('bos_break_distance_value')} | "
                 f"BOSCloseThreshold={t.get('bos_close_threshold')} | "
                 f"BOSBreakThreshold={t.get('bos_break_threshold')} | "
                 f"ExitTS={t.get('exit_ts')} | "
