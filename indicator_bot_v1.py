@@ -801,6 +801,11 @@ class IndicatorBot:
             cluster=last_candle.get("cluster") or {},
             volume_profile=snapshot.get("volume_profile") or {},
             htf_swings=None,
+            structure_states_by_tf={
+                k: (v or {}).get("structure_state")
+                for k, v in (self.last_snapshots.get(sym, {}) or {}).items()
+                if isinstance(v, dict)
+            },
         )
 
         # ---------------- EVENTS (ensure sim path scans + logs events) ----------------
@@ -1013,6 +1018,11 @@ class IndicatorBot:
                 cluster=cluster,
                 volume_profile=volume_profile,
                 htf_swings=None,
+                structure_states_by_tf={
+                    k: (v or {}).get("structure_state")
+                    for k, v in (snap_map or {}).items()
+                    if isinstance(v, dict)
+                },
             )
 
             # ---------------- EVENTS (cache-only) ----------------

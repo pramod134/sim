@@ -432,6 +432,7 @@ def evaluate_strategies(
     cluster: Dict[str, Any],
     volume_profile: Dict[str, Any],
     htf_swings: Optional[List[Dict[str, Any]]] = None,
+    structure_states_by_tf: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Evaluate enabled strategies for this symbol/timeframe.
@@ -441,11 +442,15 @@ def evaluate_strategies(
 
     # --- BOS Score V1 (only active strategy) ---
     try:
+        ss_map = structure_states_by_tf or {}
         bos_v1 = evaluate_bos_score_v1(
             symbol=symbol,
             timeframe=timeframe,
             candles=candles,
             swings=swings,
+            structure_state_tf=ss_map.get(timeframe),
+            structure_state_15m=ss_map.get("15m"),
+            structure_state_1h=ss_map.get("1h"),
         )
         if bos_v1:
             strategies.append(bos_v1)

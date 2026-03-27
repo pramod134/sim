@@ -1079,6 +1079,11 @@ class IndicatorBot:
                     cluster=cluster,
                     volume_profile=volume_profile,
                     htf_swings=None,
+                    structure_states_by_tf={
+                        k: (v or {}).get("structure_state")
+                        for k, v in (snap_map or {}).items()
+                        if isinstance(v, dict)
+                    },
                 )
 
                 # ---------------- EVENTS (NEW) ----------------
