@@ -434,32 +434,12 @@ def evaluate_strategies(
     htf_swings: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Evaluate all strategies for this symbol/timeframe.
-    Returns a list of strategy dicts.
+    Evaluate enabled strategies for this symbol/timeframe.
+    Currently only BOS Score V1 is enabled.
     """
+    strategies: List[Dict[str, Any]] = []
 
-    strategies = []
-
-    # --- STRATEGY 1: Break → FVG → Retest → Continuation ---
-    try:
-        brt = _detect_break_retest_fvg(
-            symbol=symbol,
-            timeframe=timeframe,
-            candles=candles,
-            swings=swings,
-            fvgs=fvgs,
-            liquidity=liquidity,
-            trend=trend,
-            cluster=cluster,
-            volume_profile=volume_profile,
-            htf_swings=htf_swings,
-        )
-        if brt:
-            strategies.append(brt)
-    except Exception:
-        pass
-
-    # --- STRATEGY 2: BOS Score V1 ---
+    # --- BOS Score V1 (only active strategy) ---
     try:
         bos_v1 = evaluate_bos_score_v1(
             symbol=symbol,

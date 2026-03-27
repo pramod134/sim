@@ -16,7 +16,6 @@ from indicator_calc2 import compute_advanced_extras
 
 
 from strategies import evaluate_strategies
-from strategy import run_strategy
 
 from liquidity_pool_builder import build_liquidity_pool
 
@@ -680,9 +679,6 @@ class IndicatorBot:
         self._last_day_et_by_symbol: Dict[str, str] = {}
         self._diag_cycle_count: int = 0
         self._event_counter_log_every: int = max(0, int(os.getenv("EVENT_COUNTER_LOG_EVERY", "1") or "1"))
-        self._sim_strategy_results: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        self._sim_strategy_trade_log_cursor: Dict[str, Dict[str, int]] = {}
-
     # ------------------------------------------------------------------ #
     # Simulation entrypoints (sim_worker depends on these)
     # ------------------------------------------------------------------ #
@@ -1148,67 +1144,6 @@ class IndicatorBot:
                 ev_out = compute_spot_events(ev_ctx)
                 self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
-                # Run SPY simulation strategy only after spot events are scanned for this candle.
-                # Scope: intraday SPY only, selected TFs, closed candles only.
-                sim_strategy_result = None
-                if sym_upper == "SPY" and tf in ("1m", "3m", "5m", "15m", "1h"):
-                    sim_input = []
-                    for cc in pack["closed_candles"]:
-                        ts_val = cc.get("ts")
-                        if isinstance(ts_val, dt.datetime):
-                            ts_val = ts_val.isoformat()
-                        sim_input.append(
-                            {
-                                "timestamp": ts_val,
-                                "open": cc.get("open"),
-                                "high": cc.get("high"),
-                                "low": cc.get("low"),
-                                "close": cc.get("close"),
-                                "volume": cc.get("volume", 0.0),
-                            }
-                        )
-                    sim_strategy_result = run_strategy(sim_input)
-                    self._sim_strategy_results.setdefault(sym_upper, {})[tf] = sim_strategy_result
-
-                    trade_log = sim_strategy_result.get("trade_log") if isinstance(sim_strategy_result, dict) else None
-                    if isinstance(trade_log, list):
-                        tf_cursor_map = self._sim_strategy_trade_log_cursor.setdefault(sym_upper, {})
-                        prev_count = int(tf_cursor_map.get(tf, 0) or 0)
-                        if prev_count < 0:
-                            prev_count = 0
-                        if prev_count > len(trade_log):
-                            prev_count = 0
-
-                        new_trades = trade_log[prev_count:]
-                        for t in new_trades:
-                            if not isinstance(t, dict):
-                                continue
-                            # print(
-                            #     "[STRATEGY][TRADE] "
-                            #     f"symbol={sym_upper} tf={tf} "
-                            #     f"entry_ts={t.get('entry_fill_timestamp')} entry_px={t.get('entry_price')} "
-                            #     f"exit_ts={t.get('exit_timestamp')} exit_px={t.get('exit_price')}"
-                            # )
-
-                        tf_cursor_map[tf] = len(trade_log)
-
-                        try:
-                            perf = sim_strategy_result.get("performance") if isinstance(sim_strategy_result, dict) else {}
-                            # print(
-                            #     "[STRATEGY][SIM] "
-                            #     f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
-                            #     f"candles={len(pack['closed_candles'])} "
-                            #     f"total_trades={(perf or {}).get('total_trades')} "
-                            #     f"net_profit={(perf or {}).get('net_profit')}"
-                            # )
-                        except Exception:
-                            # print(
-                            #     "[STRATEGY][SIM] "
-                            #     f"symbol={sym_upper} tf={tf} ts={last_candle.get('ts')} "
-                            #     "run_strategy executed"
-                            # )
-                            pass
-
                 # Attach extras_advanced + strategies to snapshot so cached "row shape"
                 # is what zone/liquidity builders expect (no DB writes).
                 try:
@@ -1217,10 +1152,6 @@ class IndicatorBot:
                     pass
                 try:
                     snapshot["strategies"] = strategies
-                except Exception:
-                    pass
-                try:
-                    snapshot["spy_vwap_pullback_scalp_sim"] = sim_strategy_result
                 except Exception:
                     pass
     
