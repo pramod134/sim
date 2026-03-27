@@ -173,6 +173,9 @@ def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "bos_volume_value": t.get("bos_volume_value"),
                 "bos_close_strength_value": t.get("bos_close_strength_value"),
                 "bos_break_distance_value": t.get("bos_break_distance_value"),
+                "structure_state_tf": t.get("structure_state_tf"),
+                "structure_state_15m": t.get("structure_state_15m"),
+                "structure_state_1h": t.get("structure_state_1h"),
                 "exit_ts": t.get("exit_ts"),
                 "exit_swing_reference_ts": t.get("exit_swing_reference_ts"),
                 "entry_price": t.get("entry_price"),
@@ -254,6 +257,9 @@ def print_bos_final_summaries() -> None:
                 f"VolVal={t.get('bos_volume_value')} | "
                 f"CloseStrength={t.get('bos_close_strength_value')} | "
                 f"BreakDistance={t.get('bos_break_distance_value')} | "
+                f"StructTF={t.get('structure_state_tf')} | "
+                f"Struct15m={t.get('structure_state_15m')} | "
+                f"Struct1h={t.get('structure_state_1h')} | "
                 f"ExitTS={t.get('exit_ts')} | ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
             )
@@ -265,6 +271,9 @@ def evaluate_bos_score_v1(
     timeframe: str,
     candles: List[Dict[str, Any]],
     swings: Dict[str, Any],
+    structure_state_tf: Optional[str] = None,
+    structure_state_15m: Optional[str] = None,
+    structure_state_1h: Optional[str] = None,
 ) -> Dict[str, Any]:
     state = _ensure_state(symbol, timeframe)
     cfg = state["config"]
@@ -292,6 +301,9 @@ def evaluate_bos_score_v1(
 
     mom_val = _safe_float(last_candle.get("mom_atr"), 0.0) or 0.0
     vol_val = _safe_float(last_candle.get("vol_rel"), 0.0) or 0.0
+    structure_state_tf_val = str(structure_state_tf) if structure_state_tf is not None else None
+    structure_state_15m_val = str(structure_state_15m) if structure_state_15m is not None else None
+    structure_state_1h_val = str(structure_state_1h) if structure_state_1h is not None else None
 
     candle_range = None
     if high_px is not None and low_px is not None:
@@ -405,6 +417,9 @@ def evaluate_bos_score_v1(
                 "bars_held": 0,
                 "signal_ts": pending.get("signal_ts"),
                 "signal_ts_et": pending.get("signal_ts_et"),
+                "structure_state_tf": pending.get("structure_state_tf"),
+                "structure_state_15m": pending.get("structure_state_15m"),
+                "structure_state_1h": pending.get("structure_state_1h"),
                 "side": side,
                 "notes": pending.get("notes", ""),
             }
@@ -506,6 +521,9 @@ def evaluate_bos_score_v1(
             "bos_volume_threshold": pos.get("bos_volume_threshold"),
             "bos_close_threshold": pos.get("bos_close_threshold"),
             "bos_break_threshold": pos.get("bos_break_threshold"),
+            "structure_state_tf": pos.get("structure_state_tf"),
+            "structure_state_15m": pos.get("structure_state_15m"),
+            "structure_state_1h": pos.get("structure_state_1h"),
             "shares": shares,
             "position_cost": pos.get("position_cost"),
             "cash_before_entry": pos.get("cash_before_entry"),
@@ -651,6 +669,9 @@ def evaluate_bos_score_v1(
                 "vol_value": vol_val,
                 "close_strength_value": chosen_close_strength,
                 "break_distance_value": chosen_break_distance,
+                "structure_state_tf": structure_state_tf_val,
+                "structure_state_15m": structure_state_15m_val,
+                "structure_state_1h": structure_state_1h_val,
                 "notes": "first_break_of_unbroken_swing_high" if chosen_side == "long" else "first_break_of_unbroken_swing_low",
             }
             status = "signal_detected"
@@ -699,6 +720,9 @@ def evaluate_bos_score_v1(
         "vol_value": vol_val,
         "close_strength_value": chosen_close_strength,
         "break_distance_value": chosen_break_distance,
+        "structure_state_tf": structure_state_tf_val,
+        "structure_state_15m": structure_state_15m_val,
+        "structure_state_1h": structure_state_1h_val,
         "skip_reason": skip_reason,
         "notes": "",
     }
