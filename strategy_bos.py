@@ -62,22 +62,6 @@ def _safe_int_env(name: str, default: int) -> int:
         return default
 
 
-
-
-def _format_structure_state_for_log(value: Any) -> str:
-    if isinstance(value, dict):
-        combined = value.get("combined")
-        trend = value.get("trend")
-        structure = value.get("structure")
-        event = value.get("event")
-        return (
-            f"combined={combined},trend={trend},"
-            f"structure={structure},event={event}"
-        )
-    if value is None:
-        return "None"
-    return str(value)
-
 def _parse_ts(ts: Any) -> Optional[datetime]:
     if isinstance(ts, datetime):
         return ts
@@ -273,9 +257,9 @@ def print_bos_final_summaries() -> None:
                 f"VolVal={t.get('bos_volume_value')} | "
                 f"CloseStrength={t.get('bos_close_strength_value')} | "
                 f"BreakDistance={t.get('bos_break_distance_value')} | "
-                f"StructTF={_format_structure_state_for_log(t.get('structure_state_tf'))} | "
-                f"Struct15m={_format_structure_state_for_log(t.get('structure_state_15m'))} | "
-                f"Struct1h={_format_structure_state_for_log(t.get('structure_state_1h'))} | "
+                f"StructTF={t.get('structure_state_tf')} | "
+                f"Struct15m={t.get('structure_state_15m')} | "
+                f"Struct1h={t.get('structure_state_1h')} | "
                 f"ExitTS={t.get('exit_ts')} | ExitSwingRefTS={t.get('exit_swing_reference_ts')} | "
                 f"PnL={t['gross_pnl']:.2f} | Result={t['result']}"
             )
@@ -287,9 +271,9 @@ def evaluate_bos_score_v1(
     timeframe: str,
     candles: List[Dict[str, Any]],
     swings: Dict[str, Any],
-    structure_state_tf: Optional[Any] = None,
-    structure_state_15m: Optional[Any] = None,
-    structure_state_1h: Optional[Any] = None,
+    structure_state_tf: Optional[str] = None,
+    structure_state_15m: Optional[str] = None,
+    structure_state_1h: Optional[str] = None,
 ) -> Dict[str, Any]:
     state = _ensure_state(symbol, timeframe)
     cfg = state["config"]
@@ -317,9 +301,9 @@ def evaluate_bos_score_v1(
 
     mom_val = _safe_float(last_candle.get("mom_atr"), 0.0) or 0.0
     vol_val = _safe_float(last_candle.get("vol_rel"), 0.0) or 0.0
-    structure_state_tf_val = structure_state_tf
-    structure_state_15m_val = structure_state_15m
-    structure_state_1h_val = structure_state_1h
+    structure_state_tf_val = str(structure_state_tf) if structure_state_tf is not None else None
+    structure_state_15m_val = str(structure_state_15m) if structure_state_15m is not None else None
+    structure_state_1h_val = str(structure_state_1h) if structure_state_1h is not None else None
 
     candle_range = None
     if high_px is not None and low_px is not None:
