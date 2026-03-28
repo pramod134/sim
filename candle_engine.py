@@ -323,9 +323,6 @@ class CandleEngine:
         self.candles: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         # latest_ts[symbol][tf] -> dt.datetime of last candle
         self.latest_ts: Dict[str, Dict[str, Optional[dt.datetime]]] = {}
-        # Exact-ts lookup for 1m candles to avoid repeatedly scanning full history
-        # during 3m/5m/15m/1h aggregation.
-        self._candles_1m_index: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
         # Simulation playback state
         self.sim_clock_ts: Optional[dt.datetime] = None
@@ -518,8 +515,6 @@ class CandleEngine:
                     continue
                 enriched_rows.append(e)
                 self.candles[sym][tf].append(e)
-                if tf == "1m":
-                    self._candles_1m_index.setdefault(sym, {})[e["ts"]] = e
 
             out[tf] = enriched_rows
             self.latest_ts[sym][tf] = (
@@ -646,7 +641,6 @@ class CandleEngine:
             if e_1m.get("session") != "rth":
                 continue
             self.candles[sym]["1m"].append(e_1m)
-            self._candles_1m_index.setdefault(sym, {})[e_1m["ts"]] = e_1m
             self.latest_ts[sym]["1m"] = dt.datetime.fromisoformat(e_1m["ts"])
             last_1m = e_1m
 
@@ -1144,18 +1138,33 @@ class CandleEngine:
         existing = self.candles[symbol][target_tf]
         last_ts = self.latest_ts[symbol][target_tf]
 
-        if not new_1m:
-            return []
-
-        # All known 1m candles for this symbol (fallback path / initialization).
+        # All known 1m candles for this symbol
         all_1m = self.candles[symbol].get("1m", [])
         if not all_1m:
             return []
 
-        idx = self._candles_1m_index.setdefault(symbol, {})
-        if not idx:
-            for c in all_1m:
-                idx[c["ts"]] = c
+        # Determine earliest ts to consider:
+        #   - if we already have higher-TF candles, start from their last ts
+        #   - otherwise, start from the first 1m ts
+        if last_ts is not None:
+            start_ts = last_ts
+        else:
+            start_ts = dt.datetime.fromisoformat(all_1m[0]["ts"])
+
+        # Collect 1m candles with ts >= start_ts
+        relevant_1m = [
+            c for c in all_1m if dt.datetime.fromisoformat(c["ts"]) >= start_ts
+        ]
+        if not relevant_1m:
+            return []
+
+        # Group relevant 1m candles into buckets by target_tf
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for c in relevant_1m:
+            ts = dt.datetime.fromisoformat(c["ts"])
+            b_start = bucket_start(ts, target_tf)  # UTC bucket start
+            key = b_start.isoformat()
+            buckets.setdefault(key, []).append(c)
 
         new_htf: List[Dict[str, Any]] = []
 
@@ -1168,16 +1177,8 @@ class CandleEngine:
             # e.g. "3m" -> 3, "5m" -> 5, "15m" -> 15, "1h" -> 60
             required_1m_count = int(delta.total_seconds() // 60) or 1
 
-        bucket_starts = sorted(
-            {
-                bucket_start(dt.datetime.fromisoformat(c["ts"]), target_tf)
-                for c in new_1m
-                if c.get("ts")
-            }
-        )
-
-        for b_ts in bucket_starts:
-            b_ts_str = b_ts.isoformat()
+        for b_ts_str, group in sorted(buckets.items(), key=lambda kv: kv[0]):
+            b_ts = dt.datetime.fromisoformat(b_ts_str)
 
             # Never rebuild or go backwards: only build buckets AFTER last_ts
             if last_ts is not None and b_ts <= last_ts:
@@ -1186,18 +1187,11 @@ class CandleEngine:
             # If we don't know how many 1m bars are required (shouldn't happen
             # for '3m','5m','15m','1h'), fall back to old behavior.
             if required_1m_count is None:
-                group = [
-                    g for g in all_1m
-                    if bucket_start(dt.datetime.fromisoformat(g["ts"]), target_tf) == b_ts
-                ]
-                if not group:
-                    continue
-                group_sorted = sorted(group, key=lambda g: dt.datetime.fromisoformat(g["ts"]))
-                opens = [g["open"] for g in group_sorted]
-                highs = [g["high"] for g in group_sorted]
-                lows = [g["low"] for g in group_sorted]
-                closes = [g["close"] for g in group_sorted]
-                vols = [g.get("volume", 0.0) for g in group_sorted]
+                opens = [g["open"] for g in group]
+                highs = [g["high"] for g in group]
+                lows = [g["low"] for g in group]
+                closes = [g["close"] for g in group]
+                vols = [g.get("volume", 0.0) for g in group]
 
                 raw_candle = {
                     "ts": b_ts_str,
@@ -1221,16 +1215,18 @@ class CandleEngine:
             #
             # This guarantees, for example, that a 3m bar at 10:51 has 1m bars
             # for 10:51, 10:52, 10:53 before we aggregate it.
-            group_sorted: List[Dict[str, Any]] = []
+            group_ts_set = {
+                dt.datetime.fromisoformat(g["ts"]) for g in group
+            }
+
+            complete = True
             for i in range(required_1m_count):
                 expected_ts = b_ts + dt.timedelta(minutes=i)
-                c = idx.get(expected_ts.isoformat())
-                if c is None:
-                    group_sorted = []
+                if expected_ts not in group_ts_set:
+                    complete = False
                     break
-                group_sorted.append(c)
 
-            if len(group_sorted) != required_1m_count:
+            if not complete:
                 # Underlying 1m bars for this bucket are not all present yet.
                 # We skip building this bar now; a later Twelve Data poll can
                 # fill in missing minutes and then we'll aggregate it.
@@ -1239,6 +1235,12 @@ class CandleEngine:
             # ---------- AGGREGATE COMPLETE BUCKET ----------
             # Now we know we have all required 1m candles for this bar.
             # We can safely build an OHLCV bar aligned with b_ts.
+
+            # Sort group by ts to get correct open/close ordering
+            group_sorted = sorted(
+                group,
+                key=lambda g: dt.datetime.fromisoformat(g["ts"]),
+            )
 
             opens = [g["open"] for g in group_sorted]
             highs = [g["high"] for g in group_sorted]
@@ -1464,7 +1466,6 @@ class CandleEngine:
 
         e1 = self._enrich_candle(symbol, "1m", c_norm)
         self.candles[symbol]["1m"].append(e1)
-        self._candles_1m_index.setdefault(symbol, {})[e1["ts"]] = e1
         self.latest_ts[symbol]["1m"] = dt.datetime.fromisoformat(e1["ts"])
 
         self.sim_clock_ts = self.latest_ts[symbol]["1m"]
