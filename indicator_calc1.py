@@ -2639,7 +2639,7 @@ def compute_structure_state(
     trend: Dict[str, Any],
     structural: Dict[str, Any],
     liquidity: Dict[str, Any],
-) -> Optional[str]:
+) -> Dict[str, Any]:
     """
     Multi-factor structure state used by the strategy layer.
 
@@ -2711,25 +2711,37 @@ def compute_structure_state(
     trend_dir = trend_state if trend_state in {"bullish", "bearish"} else "neutral"
     bos_dir = "bullish" if bos_side == "up" else "bearish" if bos_side == "down" else "neutral"
 
+    combined: str
+
     # Continuation vs CHoCH/reversal framing (closer to discretionary trader language)
     if trend_dir in {"bullish", "bearish"} and bos_dir == trend_dir and structure_bias == trend_dir:
-        return f"{trend_state}_continuation_bos"
-
-    if trend_dir in {"bullish", "bearish"} and bos_dir in {"bullish", "bearish"} and bos_dir != trend_dir:
+        combined = f"{trend_state}_continuation_bos"
+    elif trend_dir in {"bullish", "bearish"} and bos_dir in {"bullish", "bearish"} and bos_dir != trend_dir:
         if structure_bias == bos_dir:
-            return f"{trend_state}_choch_confirmed"
-        return f"{trend_state}_choch_early"
+            combined = f"{trend_state}_choch_confirmed"
+        else:
+            combined = f"{trend_state}_choch_early"
+    elif trend_dir in {"bullish", "bearish"} and structure_bias == trend_dir and bos_dir == "neutral":
+        combined = f"{trend_state}_trend_intact"
+    elif structure_bias in {"bullish", "bearish"} and trend_dir == "neutral":
+        combined = f"{structure_bias}_structure_building"
+    elif recent_labels and {"HH", "HL", "LH", "LL"}.issuperset(recent_labels):
+        combined = "range_or_transition"
+    else:
+        combined = trend_state
 
-    if trend_dir in {"bullish", "bearish"} and structure_bias == trend_dir and bos_dir == "neutral":
-        return f"{trend_state}_trend_intact"
+    event_state = "neutral"
+    if bos_side == "up":
+        event_state = "bos_up"
+    elif bos_side == "down":
+        event_state = "bos_down"
 
-    if structure_bias in {"bullish", "bearish"} and trend_dir == "neutral":
-        return f"{structure_bias}_structure_building"
-
-    if recent_labels and {"HH", "HL", "LH", "LL"}.issuperset(recent_labels):
-        return "range_or_transition"
-
-    return trend_state
+    return {
+        "combined": combined,
+        "structure": structure_bias,
+        "trend": trend_state,
+        "event": event_state,
+    }
 
 
 
