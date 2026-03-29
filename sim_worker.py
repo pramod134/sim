@@ -10,7 +10,7 @@ import httpx
 from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
 from liquidity_pool_builder import print_last_liquidity_output
-from strategy_bos import print_bos_final_summaries
+from strategy_bos_fvg import print_bos_fvg_final_summaries
 import spot_event as spot_event_module
 
 
@@ -606,9 +606,9 @@ async def main() -> int:
 
             # Print BOS trades once at the end of the simulation.
             try:
-                print_bos_final_summaries()
+                print_bos_fvg_final_summaries()
             except Exception as e:
-                logger.warning("failed to print BOS final summaries: %s", e)
+                logger.warning("failed to print BOS_FVG final summaries: %s", e)
 
             if sim_run_logging_enabled:
                 try:
