@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 _BOS_FVG_STATE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _ET = ZoneInfo("America/New_York")
+DEBUG_LOGS = False
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -36,7 +37,8 @@ def _safe_bool_env(name: str, default: bool) -> bool:
         return True
     if val in {"0", "false", "f", "no", "n", "off"}:
         return False
-    print(f"[BOS_FVG_V1] env fallback used for {name}: {raw!r}")
+    if DEBUG_LOGS:
+        print(f"[BOS_FVG_V1] env fallback used for {name}: {raw!r}")
     return default
 
 
@@ -46,7 +48,8 @@ def _safe_float_env(name: str, default: float) -> float:
         return default
     val = _safe_float(raw)
     if val is None:
-        print(f"[BOS_FVG_V1] env fallback used for {name}: {raw!r}")
+        if DEBUG_LOGS:
+            print(f"[BOS_FVG_V1] env fallback used for {name}: {raw!r}")
         return default
     return val
 
@@ -58,7 +61,8 @@ def _safe_int_env(name: str, default: int) -> int:
     try:
         return int(float(raw))
     except (TypeError, ValueError):
-        print(f"[BOS_FVG_V1] env fallback used for {name}: {raw!r}")
+        if DEBUG_LOGS:
+            print(f"[BOS_FVG_V1] env fallback used for {name}: {raw!r}")
         return default
 
 
@@ -312,7 +316,7 @@ def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime]) -> boo
     if dt_et is None:
         return False
     dt_et = dt_et.astimezone(_ET)
-    return dt_et.hour == 16 and dt_et.minute == 0
+    return (dt_et.hour == 16 and dt_et.minute == 0) or (dt_et.hour == 15 and dt_et.minute == 59)
 
 
 def _get_eod_exit_price(last_candle: Dict[str, Any], close_px: Optional[float]) -> Tuple[Optional[float], str]:
@@ -320,7 +324,7 @@ def _get_eod_exit_price(last_candle: Dict[str, Any], close_px: Optional[float]) 
         v = _safe_float(last_candle.get(k))
         if v is not None:
             return v, "last_1m_close"
-    return close_px, "current_tf_close_fallback"
+    return close_px, "last_1m_close"
 
 
 def _trade_list_with_pl(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -431,10 +435,12 @@ def evaluate_bos_score_v1(
 
     if long_bos_detected and swing_high_key:
         state["broken_swing_highs"].add(swing_high_key)
-        print(f"[BOS_FVG_V1] BOS detected LONG | Symbol={symbol} | TF={timeframe} | Break={recent_high_price}")
+        if DEBUG_LOGS:
+            print(f"[BOS_FVG_V1] BOS detected LONG | Symbol={symbol} | TF={timeframe} | Break={recent_high_price}")
     if short_bos_detected and swing_low_key:
         state["broken_swing_lows"].add(swing_low_key)
-        print(f"[BOS_FVG_V1] BOS detected SHORT | Symbol={symbol} | TF={timeframe} | Break={recent_low_price}")
+        if DEBUG_LOGS:
+            print(f"[BOS_FVG_V1] BOS detected SHORT | Symbol={symbol} | TF={timeframe} | Break={recent_low_price}")
 
     chosen_side = "none"
     chosen_bos_detected = False
@@ -482,9 +488,11 @@ def evaluate_bos_score_v1(
     if not state["open_position"] and cfg["enabled"] and chosen_bos_detected and chosen_score_pass and cfg["max_open_positions"] >= 1:
         pending = state["pending_setup"]
         if pending and pending.get("side") != chosen_side:
-            print(f"[BOS_FVG_V1] pending setup canceled opposite BOS | Symbol={symbol} | TF={timeframe} | OldSide={pending.get('side')} | NewSide={chosen_side}")
+            if DEBUG_LOGS:
+                print(f"[BOS_FVG_V1] pending setup canceled opposite BOS | Symbol={symbol} | TF={timeframe} | OldSide={pending.get('side')} | NewSide={chosen_side}")
         elif pending and pending.get("side") == chosen_side:
-            print(f"[BOS_FVG_V1] pending setup replaced newer same-side BOS | Symbol={symbol} | TF={timeframe} | Side={chosen_side}")
+            if DEBUG_LOGS:
+                print(f"[BOS_FVG_V1] pending setup replaced newer same-side BOS | Symbol={symbol} | TF={timeframe} | Side={chosen_side}")
 
         state["trade_id_counter"] += 1
         trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
@@ -541,33 +549,29 @@ def evaluate_bos_score_v1(
     # Entry fills (touch-based at price level)
     pending = state["pending_setup"]
     if pending and pending.get("fvg") and high_px is not None and low_px is not None:
-        f = pending["fvg"]
-        fvg_high = _safe_float(f.get("high"))
-        fvg_low = _safe_float(f.get("low"))
-        side = pending.get("side")
-        levels: List[Tuple[str, Optional[float], int]] = []
-        if side == "long":
-            levels = [("top", fvg_high, _safe_int(pending.get("entry_top_shares"), 0)), ("bottom", fvg_low, _safe_int(pending.get("entry_bottom_shares"), 0))]
-        elif side == "short":
-            levels = [("bottom", fvg_low, _safe_int(pending.get("entry_bottom_shares"), 0)), ("top", fvg_high, _safe_int(pending.get("entry_top_shares"), 0))]
-
         if not state["open_position"]:
+            f = pending["fvg"]
+            fvg_high = _safe_float(f.get("high"))
+            fvg_low = _safe_float(f.get("low"))
             state["open_position"] = {
-                "trade_id": pending.get("trade_id"), "side": side,
+                "trade_id": pending.get("trade_id"), "side": pending.get("side"),
                 "bos_ts": pending.get("bos_ts"), "bos_ts_et": pending.get("bos_ts_et"),
                 "fvg_ts": f.get("created_ts"), "fvg_high": fvg_high, "fvg_low": fvg_low,
                 "fvg_after_bos": True,
                 "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
                 "entry_top_filled": False, "entry_bottom_filled": False,
                 "entry_top_ts": None, "entry_bottom_ts": None,
-                "entry_top_shares": _safe_int(pending.get("entry_top_shares"), 0),
-                "entry_bottom_shares": _safe_int(pending.get("entry_bottom_shares"), 0),
+                "entry_top_shares_planned": _safe_int(pending.get("entry_top_shares"), 0),
+                "entry_bottom_shares_planned": _safe_int(pending.get("entry_bottom_shares"), 0),
+                "entry_top_shares": 0, "entry_bottom_shares": 0,
                 "total_shares_open": 0, "avg_entry_price": None,
                 "first_fill_ts": None, "first_fill_ts_et": None,
                 "first_opposite_bos_exit_done": False, "opposite_bos_exit_count": 0,
                 "consumed_opposite_bos_keys": set(),
                 "stop_mode": "fvg_invalidation", "breakeven_price": None,
                 "eod_exit_pending_day": None,
+                "last_rth_1m_close": None,
+                "last_rth_1m_close_ts": None,
                 "realized_pnl": 0.0,
                 "entry_ref_swing_high": pending.get("entry_ref_swing_high"),
                 "entry_ref_swing_high_ts": pending.get("entry_ref_swing_high_ts"),
@@ -590,18 +594,33 @@ def evaluate_bos_score_v1(
                 "notes": "",
             }
 
-        pos = state["open_position"]
+    pos = state.get("open_position")
+    if pos and high_px is not None and low_px is not None:
+        side = pos.get("side")
+        levels: List[Tuple[str, Optional[float], int]] = []
+        if side == "long":
+            levels = [
+                ("top", _safe_float(pos.get("entry_top_price")), _safe_int(pos.get("entry_top_shares_planned"), _safe_int(pos.get("entry_top_shares"), 0))),
+                ("bottom", _safe_float(pos.get("entry_bottom_price")), _safe_int(pos.get("entry_bottom_shares_planned"), _safe_int(pos.get("entry_bottom_shares"), 0))),
+            ]
+        elif side == "short":
+            levels = [
+                ("bottom", _safe_float(pos.get("entry_bottom_price")), _safe_int(pos.get("entry_bottom_shares_planned"), _safe_int(pos.get("entry_bottom_shares"), 0))),
+                ("top", _safe_float(pos.get("entry_top_price")), _safe_int(pos.get("entry_top_shares_planned"), _safe_int(pos.get("entry_top_shares"), 0))),
+            ]
 
-        for leg, px, shares in levels:
-            if px is None or shares <= 0:
+        for leg, px, planned_shares in levels:
+            if px is None or planned_shares <= 0:
                 continue
             touched = low_px <= px <= high_px
             already = pos.get(f"entry_{leg}_filled", False)
             if not touched or already:
                 continue
+            shares = planned_shares
             cost = shares * px
             if cost > state["cash"]:
-                print(f"[BOS_FVG_V1] entry leg skipped insufficient_cash | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | EntryType={leg} | Needed={cost:.2f} | Cash={state['cash']:.2f}")
+                if DEBUG_LOGS:
+                    print(f"[BOS_FVG_V1] entry leg skipped insufficient_cash | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | EntryType={leg} | Needed={cost:.2f} | Cash={state['cash']:.2f}")
                 continue
             old_total = _safe_int(pos.get("total_shares_open"), 0)
             old_avg = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
@@ -611,6 +630,7 @@ def evaluate_bos_score_v1(
             pos["avg_entry_price"] = new_avg
             pos[f"entry_{leg}_filled"] = True
             pos[f"entry_{leg}_ts"] = last_ts
+            pos[f"entry_{leg}_shares"] = shares
             state["cash"] -= cost
             if not pos.get("first_fill_ts"):
                 pos["first_fill_ts"] = last_ts
@@ -619,7 +639,8 @@ def evaluate_bos_score_v1(
         if _safe_int(pos.get("total_shares_open"), 0) == 0:
             state["open_position"] = None
         else:
-            state["pending_setup"] = None
+            if pos.get("entry_top_filled") and pos.get("entry_bottom_filled"):
+                state["pending_setup"] = None
             status = "in_position"
 
     # Update excursion
@@ -631,7 +652,13 @@ def evaluate_bos_score_v1(
             pos["lowest_price_during_trade"] = min(_safe_float(pos.get("lowest_price_during_trade"), low_px) or low_px, low_px)
         pos["bars_held"] = _safe_int(pos.get("bars_held"), 0) + 1
 
-    def _close_trade(exit_price: float, exit_reason: str, exit_source: str = "") -> None:
+    def _close_trade(
+        exit_price: float,
+        exit_reason: str,
+        exit_source: str = "",
+        exit_ts_override: Optional[str] = None,
+        exit_ts_et_override: Optional[str] = None,
+    ) -> None:
         nonlocal status
         p = state.get("open_position")
         if not p:
@@ -645,15 +672,15 @@ def evaluate_bos_score_v1(
         avg_entry = _safe_float(p.get("avg_entry_price"), 0.0) or 0.0
         if side == "short":
             pnl_close = (avg_entry - exit_price) * shares_open
-            pnl_pct = ((avg_entry - exit_price) / avg_entry) if avg_entry > 0 else 0.0
         else:
             pnl_close = (exit_price - avg_entry) * shares_open
-            pnl_pct = ((exit_price - avg_entry) / avg_entry) if avg_entry > 0 else 0.0
         total_pnl = (_safe_float(p.get("realized_pnl"), 0.0) or 0.0) + pnl_close
         state["cash"] += shares_open * exit_price
 
         entry_dt = _parse_ts(p.get("first_fill_ts"))
-        exit_dt = _parse_ts(last_ts)
+        final_exit_ts = exit_ts_override or last_ts
+        final_exit_ts_et = exit_ts_et_override or last_ts_et
+        exit_dt = _parse_ts(final_exit_ts)
         holding_minutes = int((exit_dt - entry_dt).total_seconds() // 60) if (entry_dt and exit_dt) else 0
         lowest = _safe_float(p.get("lowest_price_during_trade"), exit_price) or exit_price
         highest = _safe_float(p.get("highest_price_during_trade"), exit_price) or exit_price
@@ -667,9 +694,9 @@ def evaluate_bos_score_v1(
             "entry_top_filled": p.get("entry_top_filled"), "entry_bottom_filled": p.get("entry_bottom_filled"),
             "entry_top_ts": p.get("entry_top_ts"), "entry_bottom_ts": p.get("entry_bottom_ts"),
             "entry_top_shares": _safe_int(p.get("entry_top_shares"), 0), "entry_bottom_shares": _safe_int(p.get("entry_bottom_shares"), 0),
-            "avg_entry_price": avg_entry, "total_entry_shares": (_safe_int(p.get("entry_top_shares"), 0) if p.get("entry_top_filled") else 0) + (_safe_int(p.get("entry_bottom_shares"), 0) if p.get("entry_bottom_filled") else 0),
+            "avg_entry_price": avg_entry, "total_entry_shares": _safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0),
             "entry_ts": p.get("first_fill_ts"), "entry_ts_et": p.get("first_fill_ts_et"),
-            "exit_ts": last_ts, "exit_ts_et": last_ts_et, "exit_price": exit_price,
+            "exit_ts": final_exit_ts, "exit_ts_et": final_exit_ts_et, "exit_price": exit_price,
             "exit_reason_final": exit_reason, "exit_source": exit_source,
             "partial_exit_count": 1 if p.get("first_opposite_bos_exit_done") else 0,
             "bos_exit_count": p.get("opposite_bos_exit_count", 0),
@@ -677,7 +704,8 @@ def evaluate_bos_score_v1(
             "breakeven_exit_triggered": exit_reason == "BREAKEVEN",
             "invalidation_exit_triggered": exit_reason == "INVALIDATION",
             "eod_exit_triggered": exit_reason == "EOD",
-            "gross_pnl": total_pnl, "gross_pnl_pct": pnl_pct,
+            "gross_pnl": total_pnl,
+            "gross_pnl_pct": ((total_pnl / (avg_entry * (_safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0)))) * 100.0) if avg_entry > 0 and (_safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0)) > 0 else 0.0,
             "result": "profit" if total_pnl > 0 else "loss" if total_pnl < 0 else "flat",
             "bars_held": p.get("bars_held", 0), "holding_minutes": holding_minutes,
             "mae": (avg_entry - lowest) if side == "long" else (highest - avg_entry),
@@ -687,6 +715,12 @@ def evaluate_bos_score_v1(
             "bos_close_threshold": cfg.get("close_threshold"), "bos_break_threshold": cfg.get("break_threshold"),
             "bos_momentum_value": p.get("bos_momentum_value"), "bos_volume_value": p.get("bos_volume_value"),
             "bos_close_strength_value": p.get("bos_close_strength_value"), "bos_break_distance_value": p.get("bos_break_distance_value"),
+            "entry_ref_swing_high": p.get("entry_ref_swing_high"),
+            "entry_ref_swing_high_ts": p.get("entry_ref_swing_high_ts"),
+            "entry_ref_swing_high_score": p.get("entry_ref_swing_high_score"),
+            "entry_ref_swing_low": p.get("entry_ref_swing_low"),
+            "entry_ref_swing_low_ts": p.get("entry_ref_swing_low_ts"),
+            "entry_ref_swing_low_score": p.get("entry_ref_swing_low_score"),
             "notes": p.get("notes", ""),
         }
         state["completed_trades"].append(trade)
@@ -694,6 +728,25 @@ def evaluate_bos_score_v1(
         status = "exited"
 
     # Exit checks
+    pos = state.get("open_position")
+    if pos and close_px is not None:
+        last_1m_rth_close, _ = _get_eod_exit_price(last_candle, close_px)
+        if str(last_candle.get("session") or "").lower() == "rth" and last_1m_rth_close is not None and last_dt is not None:
+            pos["last_rth_1m_close"] = last_1m_rth_close
+            pos["last_rth_1m_close_ts"] = last_ts
+            pos["last_rth_day"] = last_dt.astimezone(_ET).date().isoformat()
+
+        current_day_et = last_dt.astimezone(_ET).date().isoformat() if last_dt else None
+        last_rth_day = pos.get("last_rth_day")
+        if current_day_et and last_rth_day and current_day_et > last_rth_day and _safe_int(pos.get("total_shares_open"), 0) > 0:
+            eod_px = _safe_float(pos.get("last_rth_1m_close"))
+            eod_ts = pos.get("last_rth_1m_close_ts")
+            if eod_px is not None:
+                _close_trade(eod_px, "EOD", "last_1m_close", eod_ts, _as_et_str(eod_ts))
+                pos = state.get("open_position")
+                if not pos:
+                    close_px = None
+
     pos = state.get("open_position")
     if pos and close_px is not None:
         side = pos.get("side", "long")
@@ -754,9 +807,9 @@ def evaluate_bos_score_v1(
 
         pos = state.get("open_position")
         if pos and _safe_int(pos.get("total_shares_open"), 0) > 0 and _is_rth_eod(last_candle, last_dt):
-            eod_px, source = _get_eod_exit_price(last_candle, close_px)
+            eod_px, _ = _get_eod_exit_price(last_candle, close_px)
             if eod_px is not None:
-                _close_trade(eod_px, "EOD", source)
+                _close_trade(eod_px, "EOD", "last_1m_close")
 
     if not cfg["enabled"]:
         status = "disabled"
