@@ -1,4 +1,4 @@
-from strategy_bos import evaluate_bos_score_v1
+from strategy_bos_fvg import evaluate_bos_score_v1
 from typing import Dict, Any, List, Optional
 
 
@@ -436,11 +436,11 @@ def evaluate_strategies(
 ) -> List[Dict[str, Any]]:
     """
     Evaluate enabled strategies for this symbol/timeframe.
-    Currently only BOS Score V1 is enabled.
+    Currently only BOS+FVG Score V1 is enabled.
     """
     strategies: List[Dict[str, Any]] = []
 
-    # --- BOS Score V1 (only active strategy) ---
+    # --- BOS+FVG Score V1 (only active strategy) ---
     try:
         ss_map = structure_states_by_tf or {}
         bos_v1 = evaluate_bos_score_v1(
@@ -451,6 +451,7 @@ def evaluate_strategies(
             structure_state_tf=ss_map.get(timeframe),
             structure_state_15m=ss_map.get("15m"),
             structure_state_1h=ss_map.get("1h"),
+            fvgs=fvgs,
         )
         if bos_v1:
             strategies.append(bos_v1)
