@@ -308,7 +308,7 @@ def _select_first_post_bos_fvg(fvgs: List[Dict[str, Any]], setup_side: str, bos_
     return matches[0][1]
 
 
-def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime]) -> bool:
+def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime], timeframe: str) -> bool:
     session = str(last_candle.get("session") or "").lower()
     if session and session != "rth":
         return False
@@ -317,7 +317,18 @@ def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime]) -> boo
     if dt_et is None:
         return False
     dt_et = dt_et.astimezone(_ET)
-    return (dt_et.hour == 16 and dt_et.minute == 0) or (dt_et.hour == 15 and dt_et.minute == 59)
+    tf_minutes = {
+        "1m": 1,
+        "3m": 3,
+        "5m": 5,
+        "15m": 15,
+        # 1h candles in this engine are anchored at 09:30 ET.
+        # The final (partial) RTH candle is timestamped 15:30 ET and must
+        # still be treated as the end-of-day exit event.
+        "1h": 60,
+    }.get(str(timeframe or "").lower(), 1)
+    rth_close_et = dt_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    return dt_et < rth_close_et <= (dt_et + timedelta(minutes=tf_minutes))
 
 
 def _get_eod_exit_price(
@@ -861,7 +872,7 @@ def evaluate_bos_score_v1(
                 _close_trade(close_px, "INVALIDATION", "close")
 
         pos = state.get("open_position")
-        if pos and _safe_int(pos.get("total_shares_open"), 0) > 0 and _is_rth_eod(last_candle, last_dt):
+        if pos and _safe_int(pos.get("total_shares_open"), 0) > 0 and _is_rth_eod(last_candle, last_dt, timeframe):
             eod_px, eod_source = _get_eod_exit_price(last_candle, close_px, spot_last_candle)
             if eod_px is not None:
                 _close_trade(eod_px, "EOD", eod_source)
