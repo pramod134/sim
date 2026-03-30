@@ -989,6 +989,7 @@ class IndicatorBot:
                 pass
 
         # Update caches
+        spot_last_candle = ((pending.get("1m") or {}).get("last_candle") if isinstance(pending, dict) else None)
         for tf, pack in pending.items():
             snapshot = pack["snapshot"]
             last_candle = pack["last_candle"]
@@ -1023,6 +1024,7 @@ class IndicatorBot:
                     for k, v in (snap_map or {}).items()
                     if isinstance(v, dict)
                 },
+                spot_last_candle=spot_last_candle,
             )
 
             # ---------------- EVENTS (cache-only) ----------------

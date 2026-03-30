@@ -168,7 +168,7 @@ def _log_value(value: Any) -> str:
 
 def _trade_ref_fields(trade: Dict[str, Any]) -> Tuple[Optional[str], Optional[float], Optional[float]]:
     side = str(trade.get("side") or "").lower()
-    if side == "short":
+    if side == "long":
         return trade.get("entry_ref_swing_high_ts"), _safe_float(trade.get("entry_ref_swing_high")), _safe_float(trade.get("entry_ref_swing_high_score"))
     return trade.get("entry_ref_swing_low_ts"), _safe_float(trade.get("entry_ref_swing_low")), _safe_float(trade.get("entry_ref_swing_low_score"))
 
@@ -320,11 +320,21 @@ def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime]) -> boo
     return (dt_et.hour == 16 and dt_et.minute == 0) or (dt_et.hour == 15 and dt_et.minute == 59)
 
 
-def _get_eod_exit_price(last_candle: Dict[str, Any], close_px: Optional[float]) -> Tuple[Optional[float], str]:
-    for k in ("last_1m_rth_close", "last_1m_close", "rth_last_1m_close"):
-        v = _safe_float(last_candle.get(k))
-        if v is not None:
-            return v, "last_1m_close"
+def _get_eod_exit_price(
+    last_candle: Dict[str, Any],
+    close_px: Optional[float],
+    spot_last_candle: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[float], str]:
+    for candle in (last_candle or {}, spot_last_candle or {}):
+        for k in ("last_1m_rth_close", "last_1m_close", "rth_last_1m_close"):
+            v = _safe_float(candle.get(k))
+            if v is not None:
+                return v, "last_1m_close"
+    spot_close = _safe_float((spot_last_candle or {}).get("close"))
+    if spot_close is not None:
+        return spot_close, "spot_1m_close"
+    if close_px is not None:
+        return close_px, "close"
     return None, "last_1m_close_missing"
 
 
@@ -367,6 +377,7 @@ def evaluate_bos_score_v1(
     structure_state_15m: Optional[str] = None,
     structure_state_1h: Optional[str] = None,
     fvgs: Optional[List[Dict[str, Any]]] = None,
+    spot_last_candle: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     state = _ensure_state(symbol, timeframe)
     cfg = state["config"]
@@ -762,10 +773,11 @@ def evaluate_bos_score_v1(
                 pos["fvg_filled"] = bool(f.get("filled", False))
                 pos["fvg_filled_ts"] = f.get("filled_ts")
                 break
-        last_1m_rth_close, _ = _get_eod_exit_price(last_candle, close_px)
+        last_1m_rth_close, last_1m_rth_close_source = _get_eod_exit_price(last_candle, close_px, spot_last_candle)
         if str(last_candle.get("session") or "").lower() == "rth" and last_1m_rth_close is not None and last_dt is not None:
             pos["last_rth_1m_close"] = last_1m_rth_close
             pos["last_rth_1m_close_ts"] = last_ts
+            pos["last_rth_1m_close_source"] = last_1m_rth_close_source
             pos["last_rth_day"] = last_dt.astimezone(_ET).date().isoformat()
 
         current_day_et = last_dt.astimezone(_ET).date().isoformat() if last_dt else None
@@ -773,8 +785,9 @@ def evaluate_bos_score_v1(
         if current_day_et and last_rth_day and current_day_et > last_rth_day and _safe_int(pos.get("total_shares_open"), 0) > 0:
             eod_px = _safe_float(pos.get("last_rth_1m_close"))
             eod_ts = pos.get("last_rth_1m_close_ts")
+            eod_source = str(pos.get("last_rth_1m_close_source") or "last_1m_close")
             if eod_px is not None:
-                _close_trade(eod_px, "EOD", "last_1m_close", eod_ts, _as_et_str(eod_ts))
+                _close_trade(eod_px, "EOD", eod_source, eod_ts, _as_et_str(eod_ts))
                 pos = state.get("open_position")
                 if not pos:
                     close_px = None
@@ -849,9 +862,9 @@ def evaluate_bos_score_v1(
 
         pos = state.get("open_position")
         if pos and _safe_int(pos.get("total_shares_open"), 0) > 0 and _is_rth_eod(last_candle, last_dt):
-            eod_px, _ = _get_eod_exit_price(last_candle, close_px)
+            eod_px, eod_source = _get_eod_exit_price(last_candle, close_px, spot_last_candle)
             if eod_px is not None:
-                _close_trade(eod_px, "EOD", "last_1m_close")
+                _close_trade(eod_px, "EOD", eod_source)
             else:
                 print(
                     f"[BOS_FVG_V1] EOD exit skipped missing last_1m_close | Symbol={symbol} | TF={timeframe} | "
