@@ -130,7 +130,7 @@ def _default_cfg() -> Dict[str, Any]:
         "vol_threshold": _safe_float_env("BOS_VOL_THRESHOLD", 2.0),
         "close_threshold": _safe_float_env("BOS_CLOSE_THRESHOLD", 0.7),
         "break_threshold": _safe_float_env("BOS_BREAK_THRESHOLD", 0.001),
-        "initial_capital": _safe_float_env("BOS_INITIAL_CAPITAL", 100000.0),
+        "initial_capital": _safe_float_env("BOS_INITIAL_CAPITAL", 300000.0),
         "shares_per_trade": _safe_int_env("BOS_SHARES_PER_TRADE", 100),
         "max_open_positions": _safe_int_env("BOS_MAX_OPEN_POSITIONS", 1),
     }
@@ -328,7 +328,10 @@ def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime], timefr
         "1h": 60,
     }.get(str(timeframe or "").lower(), 1)
     rth_close_et = dt_et.replace(hour=16, minute=0, second=0, microsecond=0)
-    return dt_et < rth_close_et <= (dt_et + timedelta(minutes=tf_minutes))
+    # Some feeds timestamp the final RTH bar at 16:00 ET for 5m/15m data
+    # (bar close timestamp). Include equality on the left bound so EOD can
+    # still trigger for those bars.
+    return dt_et <= rth_close_et <= (dt_et + timedelta(minutes=tf_minutes))
 
 
 def _get_eod_exit_price(
@@ -629,14 +632,19 @@ def evaluate_bos_score_v1(
 
     pos = state.get("open_position")
     if pos and high_px is not None and low_px is not None:
+        fvg_created_dt = _parse_ts(pos.get("fvg_ts"))
+        # Require entry touches to happen strictly after the FVG-formation bar.
+        can_fill_entries = not (fvg_created_dt and last_dt and last_dt <= fvg_created_dt)
         side = pos.get("side")
         levels: List[Tuple[str, Optional[float], int]] = []
         if side == "long":
+            # Long entries are prioritized from FVG top -> bottom.
             levels = [
                 ("top", _safe_float(pos.get("entry_top_price")), _safe_int(pos.get("entry_top_shares_planned"), _safe_int(pos.get("entry_top_shares"), 0))),
                 ("bottom", _safe_float(pos.get("entry_bottom_price")), _safe_int(pos.get("entry_bottom_shares_planned"), _safe_int(pos.get("entry_bottom_shares"), 0))),
             ]
         elif side == "short":
+            # Short entries are prioritized from FVG bottom -> top (vice versa).
             levels = [
                 ("bottom", _safe_float(pos.get("entry_bottom_price")), _safe_int(pos.get("entry_bottom_shares_planned"), _safe_int(pos.get("entry_bottom_shares"), 0))),
                 ("top", _safe_float(pos.get("entry_top_price")), _safe_int(pos.get("entry_top_shares_planned"), _safe_int(pos.get("entry_top_shares"), 0))),
@@ -644,6 +652,8 @@ def evaluate_bos_score_v1(
 
         for leg, px, planned_shares in levels:
             if px is None or planned_shares <= 0:
+                continue
+            if not can_fill_entries:
                 continue
             touched = low_px <= px <= high_px
             already = pos.get(f"entry_{leg}_filled", False)
