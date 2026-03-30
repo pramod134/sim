@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 _BOS_FVG_STATE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _ET = ZoneInfo("America/New_York")
-DEBUG_LOGS = False
+DEBUG_LOGS = str(os.getenv("BOS_FVG_DEBUG_LOGS", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
