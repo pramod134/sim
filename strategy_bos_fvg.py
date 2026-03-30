@@ -150,9 +150,6 @@ def _ensure_state(symbol: str, timeframe: str) -> Dict[str, Any]:
             "trade_id_counter": 0,
             "signal_id_counter": 0,
             "completed_trades": [],
-            "finalized_trade_ids": set(),
-            "used_trade_ids": set(),
-            "last_rth_1m_close_by_day": {},
             "signals": [],
             "latest_snapshot": None,
             "final_logs_emitted": False,
@@ -499,10 +496,6 @@ def evaluate_bos_score_v1(
 
         state["trade_id_counter"] += 1
         trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
-        while trade_id in state.get("used_trade_ids", set()) or trade_id in state.get("finalized_trade_ids", set()):
-            state["trade_id_counter"] += 1
-            trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
-        state.setdefault("used_trade_ids", set()).add(trade_id)
         total_shares = cfg["shares_per_trade"]
         top_shares = total_shares // 2
         bottom_shares = total_shares - top_shares
@@ -599,7 +592,6 @@ def evaluate_bos_score_v1(
                 "lowest_price_during_trade": low_px,
                 "bars_held": 0,
                 "notes": "",
-                "is_finalized": False,
             }
 
     pos = state.get("open_position")
@@ -671,14 +663,6 @@ def evaluate_bos_score_v1(
         p = state.get("open_position")
         if not p:
             return
-        if bool(p.get("is_finalized", False)):
-            state["open_position"] = None
-            return
-        trade_id = str(p.get("trade_id") or "")
-        if trade_id and trade_id in state.get("finalized_trade_ids", set()):
-            p["is_finalized"] = True
-            state["open_position"] = None
-            return
         shares_open = _safe_int(p.get("total_shares_open"), 0)
         if shares_open <= 0:
             state["open_position"] = None
@@ -739,52 +723,29 @@ def evaluate_bos_score_v1(
             "entry_ref_swing_low_score": p.get("entry_ref_swing_low_score"),
             "notes": p.get("notes", ""),
         }
-        existing_ids = {str(t.get("trade_id") or "") for t in state.get("completed_trades", [])}
-        if not trade_id or trade_id not in existing_ids:
-            state["completed_trades"].append(trade)
-        p["is_finalized"] = True
-        if trade_id:
-            state.setdefault("finalized_trade_ids", set()).add(trade_id)
-            state.setdefault("used_trade_ids", set()).add(trade_id)
+        state["completed_trades"].append(trade)
         state["open_position"] = None
         status = "exited"
 
     # Exit checks
-    if close_px is not None and last_dt is not None:
-        state_close_1m, _ = _get_eod_exit_price(last_candle, close_px)
-        if str(last_candle.get("session") or "").lower() == "rth" and state_close_1m is not None:
-            day_key = last_dt.astimezone(_ET).date().isoformat()
-            state.setdefault("last_rth_1m_close_by_day", {})[day_key] = {"price": state_close_1m, "ts": last_ts}
-
     pos = state.get("open_position")
     if pos and close_px is not None:
         last_1m_rth_close, _ = _get_eod_exit_price(last_candle, close_px)
         if str(last_candle.get("session") or "").lower() == "rth" and last_1m_rth_close is not None and last_dt is not None:
-            day_key = last_dt.astimezone(_ET).date().isoformat()
             pos["last_rth_1m_close"] = last_1m_rth_close
             pos["last_rth_1m_close_ts"] = last_ts
-            pos["last_rth_day"] = day_key
+            pos["last_rth_day"] = last_dt.astimezone(_ET).date().isoformat()
 
         current_day_et = last_dt.astimezone(_ET).date().isoformat() if last_dt else None
         last_rth_day = pos.get("last_rth_day")
-        if not last_rth_day:
-            entry_dt = _parse_ts(pos.get("first_fill_ts"))
-            if entry_dt:
-                last_rth_day = entry_dt.astimezone(_ET).date().isoformat()
-                pos["last_rth_day"] = last_rth_day
         if current_day_et and last_rth_day and current_day_et > last_rth_day and _safe_int(pos.get("total_shares_open"), 0) > 0:
-            day_data = (state.get("last_rth_1m_close_by_day") or {}).get(last_rth_day, {})
             eod_px = _safe_float(pos.get("last_rth_1m_close"))
             eod_ts = pos.get("last_rth_1m_close_ts")
-            if eod_px is None:
-                eod_px = _safe_float(day_data.get("price"))
-                eod_ts = day_data.get("ts") or eod_ts
-            if eod_px is None:
-                eod_px = close_px
-            _close_trade(eod_px, "EOD", "last_1m_close", eod_ts or last_ts, _as_et_str(eod_ts or last_ts))
-            pos = state.get("open_position")
-            if not pos:
-                close_px = None
+            if eod_px is not None:
+                _close_trade(eod_px, "EOD", "last_1m_close", eod_ts, _as_et_str(eod_ts))
+                pos = state.get("open_position")
+                if not pos:
+                    close_px = None
 
     pos = state.get("open_position")
     if pos and close_px is not None:
