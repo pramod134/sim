@@ -1050,6 +1050,7 @@ class IndicatorBot:
                     # print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
     
             # Now write to DB (and update caches)
+            spot_last_candle = ((pending.get("1m") or {}).get("last_candle") if isinstance(pending, dict) else None)
             for tf, pack in pending.items():
                 snapshot = pack["snapshot"]
                 last_candle = pack["last_candle"]
@@ -1067,7 +1068,7 @@ class IndicatorBot:
                 extras_advanced = pack["extras_advanced"]
     
                 cluster = last_candle.get("cluster") or {}
-    
+
                 strategies = evaluate_strategies(
                     symbol=sym_upper,
                     timeframe=tf,
@@ -1084,6 +1085,7 @@ class IndicatorBot:
                         for k, v in (snap_map or {}).items()
                         if isinstance(v, dict)
                     },
+                    spot_last_candle=spot_last_candle,
                 )
 
                 # ---------------- EVENTS (NEW) ----------------

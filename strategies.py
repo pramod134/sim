@@ -433,6 +433,7 @@ def evaluate_strategies(
     volume_profile: Dict[str, Any],
     htf_swings: Optional[List[Dict[str, Any]]] = None,
     structure_states_by_tf: Optional[Dict[str, Any]] = None,
+    spot_last_candle: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Evaluate enabled strategies for this symbol/timeframe.
@@ -452,6 +453,7 @@ def evaluate_strategies(
             structure_state_15m=ss_map.get("15m"),
             structure_state_1h=ss_map.get("1h"),
             fvgs=fvgs,
+            spot_last_candle=spot_last_candle,
         )
         if bos_v1:
             strategies.append(bos_v1)
