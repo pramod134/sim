@@ -457,7 +457,9 @@ def evaluate_strategies(
         )
         if bos_v1:
             strategies.append(bos_v1)
-    except Exception:
-        pass
+    except Exception as exc:
+        print(
+            f"[BOS_FVG_V1] evaluate_strategies failed | Symbol={symbol} | TF={timeframe} | Error={exc}"
+        )
 
     return strategies
