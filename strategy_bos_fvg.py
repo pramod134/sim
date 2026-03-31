@@ -189,6 +189,7 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
         f"BreakDistance={_log_value(trade.get('bos_break_distance_value'))} | StructureStateTF={_log_value(trade.get('structure_state_tf'))} | "
         f"StructureState15m={_log_value(trade.get('structure_state_15m'))} | StructureState1h={_log_value(trade.get('structure_state_1h'))} | "
         f"FVGTS={_log_value(trade.get('fvg_ts'))} | FVGHigh={_log_value(trade.get('fvg_high'))} | FVGLow={_log_value(trade.get('fvg_low'))} | "
+        f"FVGScore={_log_value(trade.get('fvg_score'))} | TradeScore={_log_value(trade.get('trade_score'))} | "
         f"FVGAfterBOS=true | EntryType={_log_value(trade.get('entry_type'))} | EntryTopPrice={_log_value(trade.get('entry_top_price'))} | "
         f"EntryBottomPrice={_log_value(trade.get('entry_bottom_price'))} | EntryTopFilled={_log_value(entry_top_filled)} | "
         f"EntryBottomFilled={_log_value(entry_bottom_filled)} | EntryTopTS={_log_value(trade.get('entry_top_ts'))} | "
@@ -574,10 +575,13 @@ def evaluate_bos_score_v1(
                 "high": _safe_float(fvg.get("high")),
                 "filled": bool(fvg.get("filled", False)),
                 "filled_ts": fvg.get("filled_ts"),
+                "fvg_score": _safe_float(fvg.get("fvg_score")),
+                "trade_score": _safe_float(fvg.get("trade_score")),
             }
             print(
                 f"[BOS_FVG_V1] FVG selected | Symbol={symbol} | TF={timeframe} | TradeID={pending.get('trade_id')} | "
-                f"Side={pending.get('side')} | FVG_TS={fvg.get('created_ts')} | Low={_safe_float(fvg.get('low'))} | High={_safe_float(fvg.get('high'))}"
+                f"Side={pending.get('side')} | FVG_TS={fvg.get('created_ts')} | Low={_safe_float(fvg.get('low'))} | High={_safe_float(fvg.get('high'))} | "
+                f"FVGScore={_safe_float(fvg.get('fvg_score'))} | TradeScore={_safe_float(fvg.get('trade_score'))}"
             )
 
     # Entry fills (touch-based at price level)
@@ -593,6 +597,8 @@ def evaluate_bos_score_v1(
                 "fvg_ts": f.get("created_ts"), "fvg_high": fvg_high, "fvg_low": fvg_low,
                 "fvg_filled": bool(f.get("filled", False)),
                 "fvg_filled_ts": f.get("filled_ts"),
+                "fvg_score": _safe_float(f.get("fvg_score")),
+                "trade_score": _safe_float(f.get("trade_score")),
                 "fvg_after_bos": True,
                 "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
                 "entry_top_filled": False, "entry_bottom_filled": False,
@@ -737,6 +743,7 @@ def evaluate_bos_score_v1(
             "trade_id": p.get("trade_id"), "symbol": symbol, "timeframe": timeframe, "side": side,
             "bos_ts": p.get("bos_ts"), "bos_ts_et": p.get("bos_ts_et"), "fvg_ts": p.get("fvg_ts"),
             "fvg_high": p.get("fvg_high"), "fvg_low": p.get("fvg_low"), "fvg_after_bos": True,
+            "fvg_score": p.get("fvg_score"), "trade_score": p.get("trade_score"),
             "entry_type": "both" if p.get("entry_top_filled") and p.get("entry_bottom_filled") else "top" if p.get("entry_top_filled") else "bottom" if p.get("entry_bottom_filled") else "none",
             "entry_top_price": p.get("entry_top_price"), "entry_bottom_price": p.get("entry_bottom_price"),
             "entry_top_filled": p.get("entry_top_filled"), "entry_bottom_filled": p.get("entry_bottom_filled"),
