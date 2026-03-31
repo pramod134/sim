@@ -190,13 +190,16 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
         f"StructureState15m={_log_value(trade.get('structure_state_15m'))} | StructureState1h={_log_value(trade.get('structure_state_1h'))} | "
         f"FVGTS={_log_value(trade.get('fvg_ts'))} | FVGHigh={_log_value(trade.get('fvg_high'))} | FVGLow={_log_value(trade.get('fvg_low'))} | "
         f"FVGScore={_log_value(trade.get('fvg_score'))} | TradeScore={_log_value(trade.get('trade_score'))} | "
+        f"FVGScoreSrc={_log_value(trade.get('fvg_score_src'))} | TradeScoreSrc={_log_value(trade.get('trade_score_src'))} | "
         f"FVGAfterBOS=true | EntryType={_log_value(trade.get('entry_type'))} | EntryTopPrice={_log_value(trade.get('entry_top_price'))} | "
         f"EntryBottomPrice={_log_value(trade.get('entry_bottom_price'))} | EntryTopFilled={_log_value(entry_top_filled)} | "
         f"EntryBottomFilled={_log_value(entry_bottom_filled)} | EntryTopTS={_log_value(trade.get('entry_top_ts'))} | "
         f"EntryBottomTS={_log_value(trade.get('entry_bottom_ts'))} | EntryTopShares={_log_value(_safe_int(trade.get('entry_top_shares'), 0))} | "
         f"EntryBottomShares={_log_value(_safe_int(trade.get('entry_bottom_shares'), 0))} | AvgEntry={_log_value(trade.get('avg_entry_price'))} | "
         f"TotalEntryShares={_log_value(_safe_int(trade.get('total_entry_shares'), 0))} | PartialExitCount={_log_value(partial_exit_count)} | "
-        f"BOSExitCount={_log_value(bos_exit_count)} | BreakevenPrice={_log_value(trade.get('breakeven_price'))} | "
+        f"BOSExitCount={_log_value(bos_exit_count)} | BOS1RefSwingTS={_log_value(trade.get('bos1_ref_swing_ts'))} | "
+        f"BOS1ExitTS={_log_value(trade.get('bos1_exit_ts'))} | BOS2RefSwingTS={_log_value(trade.get('bos2_ref_swing_ts'))} | "
+        f"BOS2ExitTS={_log_value(trade.get('bos2_exit_ts'))} | BreakevenPrice={_log_value(trade.get('breakeven_price'))} | "
         f"BreakevenExitTriggered={_log_value(bool(trade.get('breakeven_exit_triggered', False)))} | "
         f"InvalidationExitTriggered={_log_value(bool(trade.get('invalidation_exit_triggered', False)))} | "
         f"EODExitTriggered={_log_value(bool(trade.get('eod_exit_triggered', False)))} | ExitTS={_log_value(trade.get('exit_ts'))} | "
@@ -291,18 +294,37 @@ def _normalize_fvg_direction(v: Any) -> str:
     return ""
 
 
-def _extract_fvg_score_fields(fvg: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+def _extract_fvg_score_fields(fvg: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], str, str]:
+    style = fvg.get("style") if isinstance(fvg.get("style"), dict) else {}
+
+    # IMPORTANT: do not use generic `score` or style.confidence as FVG/trade quality
+    # in this strategy. Those are often normalized event-style scores and can mask
+    # the true per-FVG values.
     trade_score = _safe_float(fvg.get("trade_score"))
+    trade_src = "trade_score"
     if trade_score is None:
-        trade_score = _safe_float(fvg.get("score"))
-    if trade_score is None:
-        style = fvg.get("style") if isinstance(fvg.get("style"), dict) else {}
-        trade_score = _safe_float(style.get("confidence"))
+        trade_score = _safe_float(style.get("trade_score"))
+        trade_src = "style.trade_score"
 
     fvg_score = _safe_float(fvg.get("fvg_score"))
+    fvg_src = "fvg_score"
     if fvg_score is None:
+        fvg_score = _safe_float(style.get("fvg_score"))
+        fvg_src = "style.fvg_score"
+
+    if fvg_score is None and trade_score is not None:
         fvg_score = trade_score
-    return fvg_score, trade_score
+        fvg_src = f"fallback:{trade_src}"
+    if trade_score is None and fvg_score is not None:
+        trade_score = fvg_score
+        trade_src = f"fallback:{fvg_src}"
+
+    if fvg_score is None:
+        fvg_src = "missing"
+    if trade_score is None:
+        trade_src = "missing"
+
+    return fvg_score, trade_score, fvg_src, trade_src
 
 
 def _select_first_post_bos_fvg(fvgs: List[Dict[str, Any]], setup_side: str, bos_dt: Optional[datetime]) -> Optional[Dict[str, Any]]:
@@ -582,7 +604,7 @@ def evaluate_bos_score_v1(
         bos_dt = _parse_ts(pending.get("bos_ts"))
         fvg = _select_first_post_bos_fvg(fvg_source or [], pending.get("side"), bos_dt)
         if fvg:
-            fvg_score, trade_score = _extract_fvg_score_fields(fvg)
+            fvg_score, trade_score, fvg_score_src, trade_score_src = _extract_fvg_score_fields(fvg)
             pending["fvg"] = {
                 "created_ts": fvg.get("created_ts"),
                 "direction": fvg.get("direction"),
@@ -592,11 +614,13 @@ def evaluate_bos_score_v1(
                 "filled_ts": fvg.get("filled_ts"),
                 "fvg_score": fvg_score,
                 "trade_score": trade_score,
+                "fvg_score_src": fvg_score_src,
+                "trade_score_src": trade_score_src,
             }
             print(
                 f"[BOS_FVG_V1] FVG selected | Symbol={symbol} | TF={timeframe} | TradeID={pending.get('trade_id')} | "
                 f"Side={pending.get('side')} | FVG_TS={fvg.get('created_ts')} | Low={_safe_float(fvg.get('low'))} | High={_safe_float(fvg.get('high'))} | "
-                f"FVGScore={fvg_score} | TradeScore={trade_score}"
+                f"FVGScore={fvg_score} | TradeScore={trade_score} | FVGScoreSrc={fvg_score_src} | TradeScoreSrc={trade_score_src}"
             )
 
     # Entry fills (touch-based at price level)
@@ -614,6 +638,8 @@ def evaluate_bos_score_v1(
                 "fvg_filled_ts": f.get("filled_ts"),
                 "fvg_score": _safe_float(f.get("fvg_score")),
                 "trade_score": _safe_float(f.get("trade_score")),
+                "fvg_score_src": f.get("fvg_score_src"),
+                "trade_score_src": f.get("trade_score_src"),
                 "fvg_after_bos": True,
                 "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
                 "entry_top_filled": False, "entry_bottom_filled": False,
@@ -624,6 +650,8 @@ def evaluate_bos_score_v1(
                 "total_shares_open": 0, "avg_entry_price": None,
                 "first_fill_ts": None, "first_fill_ts_et": None,
                 "first_opposite_bos_exit_done": False, "opposite_bos_exit_count": 0,
+                "bos1_ref_swing_ts": None, "bos1_exit_ts": None,
+                "bos2_ref_swing_ts": None, "bos2_exit_ts": None,
                 "consumed_opposite_bos_keys": set(),
                 "stop_mode": "fvg_invalidation", "breakeven_price": None,
                 "eod_exit_pending_day": None,
@@ -770,6 +798,10 @@ def evaluate_bos_score_v1(
             "exit_reason_final": exit_reason, "exit_source": exit_source,
             "partial_exit_count": 1 if p.get("first_opposite_bos_exit_done") else 0,
             "bos_exit_count": p.get("opposite_bos_exit_count", 0),
+            "bos1_ref_swing_ts": p.get("bos1_ref_swing_ts"),
+            "bos1_exit_ts": p.get("bos1_exit_ts"),
+            "bos2_ref_swing_ts": p.get("bos2_ref_swing_ts"),
+            "bos2_exit_ts": p.get("bos2_exit_ts"),
             "breakeven_price": p.get("breakeven_price"),
             "breakeven_exit_triggered": exit_reason == "BREAKEVEN",
             "invalidation_exit_triggered": exit_reason == "INVALIDATION",
@@ -861,6 +893,8 @@ def evaluate_bos_score_v1(
                         state["cash"] += exit_shares * close_px
                         pos["total_shares_open"] = shares_open - exit_shares
                         pos["first_opposite_bos_exit_done"] = True
+                        pos["bos1_exit_ts"] = last_ts
+                        pos["bos1_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
                         pos["stop_mode"] = "breakeven"
                         pos["breakeven_price"] = avg_entry
                         print(
@@ -871,6 +905,8 @@ def evaluate_bos_score_v1(
                         if _safe_int(pos.get("total_shares_open"), 0) <= 0:
                             _close_trade(close_px, "BOS1", "close")
                     elif pos["opposite_bos_exit_count"] >= 2 and _safe_int(pos.get("total_shares_open"), 0) > 0:
+                        pos["bos2_exit_ts"] = last_ts
+                        pos["bos2_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
                         _close_trade(close_px, "BOS2", "close")
 
         pos = state.get("open_position")
