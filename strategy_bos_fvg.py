@@ -1,4 +1,5 @@
 import os
+import json
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -620,7 +621,8 @@ def evaluate_bos_score_v1(
             print(
                 f"[BOS_FVG_V1] FVG selected | Symbol={symbol} | TF={timeframe} | TradeID={pending.get('trade_id')} | "
                 f"Side={pending.get('side')} | FVG_TS={fvg.get('created_ts')} | Low={_safe_float(fvg.get('low'))} | High={_safe_float(fvg.get('high'))} | "
-                f"FVGScore={fvg_score} | TradeScore={trade_score} | FVGScoreSrc={fvg_score_src} | TradeScoreSrc={trade_score_src}"
+                f"FVGScore={fvg_score} | TradeScore={trade_score} | FVGScoreSrc={fvg_score_src} | TradeScoreSrc={trade_score_src} | "
+                f"FVG={json.dumps(fvg, default=str, sort_keys=True)}"
             )
 
     # Entry fills (touch-based at price level)
