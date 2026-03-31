@@ -291,6 +291,20 @@ def _normalize_fvg_direction(v: Any) -> str:
     return ""
 
 
+def _extract_fvg_score_fields(fvg: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    trade_score = _safe_float(fvg.get("trade_score"))
+    if trade_score is None:
+        trade_score = _safe_float(fvg.get("score"))
+    if trade_score is None:
+        style = fvg.get("style") if isinstance(fvg.get("style"), dict) else {}
+        trade_score = _safe_float(style.get("confidence"))
+
+    fvg_score = _safe_float(fvg.get("fvg_score"))
+    if fvg_score is None:
+        fvg_score = trade_score
+    return fvg_score, trade_score
+
+
 def _select_first_post_bos_fvg(fvgs: List[Dict[str, Any]], setup_side: str, bos_dt: Optional[datetime]) -> Optional[Dict[str, Any]]:
     if not bos_dt:
         return None
@@ -568,6 +582,7 @@ def evaluate_bos_score_v1(
         bos_dt = _parse_ts(pending.get("bos_ts"))
         fvg = _select_first_post_bos_fvg(fvg_source or [], pending.get("side"), bos_dt)
         if fvg:
+            fvg_score, trade_score = _extract_fvg_score_fields(fvg)
             pending["fvg"] = {
                 "created_ts": fvg.get("created_ts"),
                 "direction": fvg.get("direction"),
@@ -575,13 +590,13 @@ def evaluate_bos_score_v1(
                 "high": _safe_float(fvg.get("high")),
                 "filled": bool(fvg.get("filled", False)),
                 "filled_ts": fvg.get("filled_ts"),
-                "fvg_score": _safe_float(fvg.get("fvg_score")),
-                "trade_score": _safe_float(fvg.get("trade_score")),
+                "fvg_score": fvg_score,
+                "trade_score": trade_score,
             }
             print(
                 f"[BOS_FVG_V1] FVG selected | Symbol={symbol} | TF={timeframe} | TradeID={pending.get('trade_id')} | "
                 f"Side={pending.get('side')} | FVG_TS={fvg.get('created_ts')} | Low={_safe_float(fvg.get('low'))} | High={_safe_float(fvg.get('high'))} | "
-                f"FVGScore={_safe_float(fvg.get('fvg_score'))} | TradeScore={_safe_float(fvg.get('trade_score'))}"
+                f"FVGScore={fvg_score} | TradeScore={trade_score}"
             )
 
     # Entry fills (touch-based at price level)
