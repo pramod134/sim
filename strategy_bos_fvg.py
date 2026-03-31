@@ -696,6 +696,7 @@ def evaluate_bos_score_v1(
                 "first_opposite_bos_exit_done": False, "opposite_bos_exit_count": 0,
                 "bos1_ref_swing_ts": None, "bos1_exit_ts": None,
                 "bos2_ref_swing_ts": None, "bos2_exit_ts": None,
+                "breakeven_armed_ts": None,
                 "consumed_opposite_bos_keys": set(),
                 "stop_mode": "fvg_invalidation", "breakeven_price": None,
                 "eod_exit_pending_day": None,
@@ -973,6 +974,7 @@ def evaluate_bos_score_v1(
                         pos["bos1_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
                         pos["stop_mode"] = "breakeven"
                         pos["breakeven_price"] = avg_entry
+                        pos["breakeven_armed_ts"] = last_ts
                         print(
                             f"[BOS_FVG_V1] partial exit BOS1 | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
                             f"Side={side} | ExitReason=BOS1 | ExitPct=50 | ExitPrice={close_px} | ExitShares={exit_shares} | "
@@ -989,7 +991,11 @@ def evaluate_bos_score_v1(
         if pos and pos.get("stop_mode") == "breakeven" and _safe_int(pos.get("total_shares_open"), 0) > 0:
             be = _safe_float(pos.get("breakeven_price"))
             if be is not None:
-                be_hit = (side == "long" and low_px is not None and low_px <= be) or (side == "short" and high_px is not None and high_px >= be)
+                be_armed_ts = pos.get("breakeven_armed_ts")
+                be_same_candle_as_arm = bool(be_armed_ts and last_ts and be_armed_ts == last_ts)
+                be_hit = False
+                if not be_same_candle_as_arm:
+                    be_hit = (side == "long" and low_px is not None and low_px <= be) or (side == "short" and high_px is not None and high_px >= be)
                 if be_hit:
                     if DEBUG_LOGS:
                         print(
