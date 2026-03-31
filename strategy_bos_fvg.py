@@ -346,6 +346,46 @@ def _select_first_post_bos_fvg(fvgs: List[Dict[str, Any]], setup_side: str, bos_
     return matches[0][1]
 
 
+def _match_selected_fvg(
+    selected_fvg: Optional[Dict[str, Any]],
+    fvg_source: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(selected_fvg, dict):
+        return None
+    created_ts = selected_fvg.get("created_ts")
+    direction = _normalize_fvg_direction(selected_fvg.get("direction"))
+    if not created_ts or not direction:
+        return None
+    for f in fvg_source or []:
+        if _normalize_fvg_direction(f.get("direction")) != direction:
+            continue
+        if f.get("created_ts") == created_ts:
+            return f
+    return None
+
+
+def _refresh_selected_fvg_fields(
+    selected_fvg: Optional[Dict[str, Any]],
+    fvg_source: List[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    if not isinstance(selected_fvg, dict):
+        return selected_fvg, None
+    matched = _match_selected_fvg(selected_fvg, fvg_source or [])
+    if not matched:
+        return selected_fvg, None
+    fvg_score, trade_score, fvg_score_src, trade_score_src = _extract_fvg_score_fields(matched)
+    selected_fvg["direction"] = matched.get("direction")
+    selected_fvg["low"] = _safe_float(matched.get("low"))
+    selected_fvg["high"] = _safe_float(matched.get("high"))
+    selected_fvg["filled"] = bool(matched.get("filled", False))
+    selected_fvg["filled_ts"] = matched.get("filled_ts")
+    selected_fvg["fvg_score"] = fvg_score
+    selected_fvg["trade_score"] = trade_score
+    selected_fvg["fvg_score_src"] = fvg_score_src
+    selected_fvg["trade_score_src"] = trade_score_src
+    return selected_fvg, matched
+
+
 def _is_rth_eod(last_candle: Dict[str, Any], last_dt: Optional[datetime], timeframe: str) -> bool:
     session = str(last_candle.get("session") or "").lower()
     if session and session != "rth":
@@ -624,6 +664,8 @@ def evaluate_bos_score_v1(
                 f"FVGScore={fvg_score} | TradeScore={trade_score} | FVGScoreSrc={fvg_score_src} | TradeScoreSrc={trade_score_src} | "
                 f"FVG={json.dumps(fvg, default=str, sort_keys=True)}"
             )
+    elif pending and pending.get("fvg"):
+        pending["fvg"], _ = _refresh_selected_fvg_fields(pending.get("fvg"), fvg_source or [])
 
     # Entry fills (touch-based at price level)
     pending = state["pending_setup"]
@@ -683,6 +725,31 @@ def evaluate_bos_score_v1(
 
     pos = state.get("open_position")
     if pos and high_px is not None and low_px is not None:
+        if not pos.get("first_fill_ts"):
+            selected_fvg = {
+                "created_ts": pos.get("fvg_ts"),
+                "direction": "bull" if pos.get("side") == "long" else "bear",
+                "high": pos.get("fvg_high"),
+                "low": pos.get("fvg_low"),
+                "filled": bool(pos.get("fvg_filled", False)),
+                "filled_ts": pos.get("fvg_filled_ts"),
+                "fvg_score": pos.get("fvg_score"),
+                "trade_score": pos.get("trade_score"),
+                "fvg_score_src": pos.get("fvg_score_src"),
+                "trade_score_src": pos.get("trade_score_src"),
+            }
+            refreshed_selected_fvg, _ = _refresh_selected_fvg_fields(selected_fvg, fvg_source or [])
+            if isinstance(refreshed_selected_fvg, dict):
+                pos["fvg_high"] = _safe_float(refreshed_selected_fvg.get("high"))
+                pos["fvg_low"] = _safe_float(refreshed_selected_fvg.get("low"))
+                pos["fvg_filled"] = bool(refreshed_selected_fvg.get("filled", False))
+                pos["fvg_filled_ts"] = refreshed_selected_fvg.get("filled_ts")
+                pos["fvg_score"] = _safe_float(refreshed_selected_fvg.get("fvg_score"))
+                pos["trade_score"] = _safe_float(refreshed_selected_fvg.get("trade_score"))
+                pos["fvg_score_src"] = refreshed_selected_fvg.get("fvg_score_src")
+                pos["trade_score_src"] = refreshed_selected_fvg.get("trade_score_src")
+                pos["entry_top_price"] = pos["fvg_high"]
+                pos["entry_bottom_price"] = pos["fvg_low"]
         fvg_created_dt = _parse_ts(pos.get("fvg_ts"))
         # Require entry touches to happen strictly after the FVG-formation bar.
         can_fill_entries = not (fvg_created_dt and last_dt and last_dt <= fvg_created_dt)
@@ -734,6 +801,12 @@ def evaluate_bos_score_v1(
                 pos["first_fill_ts"] = last_ts
                 pos["first_fill_ts_et"] = last_ts_et
                 state["pending_setup"] = None
+                print(
+                    f"[BOS_FVG_V1] entry fvg snapshot | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
+                    f"FVG_TS={pos.get('fvg_ts')} | Low={_safe_float(pos.get('fvg_low'))} | High={_safe_float(pos.get('fvg_high'))} | "
+                    f"FVGScore={_safe_float(pos.get('fvg_score'))} | TradeScore={_safe_float(pos.get('trade_score'))} | "
+                    f"FVGScoreSrc={pos.get('fvg_score_src')} | TradeScoreSrc={pos.get('trade_score_src')}"
+                )
 
         if _safe_int(pos.get("total_shares_open"), 0) == 0:
             state["open_position"] = None
@@ -789,6 +862,7 @@ def evaluate_bos_score_v1(
             "bos_ts": p.get("bos_ts"), "bos_ts_et": p.get("bos_ts_et"), "fvg_ts": p.get("fvg_ts"),
             "fvg_high": p.get("fvg_high"), "fvg_low": p.get("fvg_low"), "fvg_after_bos": True,
             "fvg_score": p.get("fvg_score"), "trade_score": p.get("trade_score"),
+            "fvg_score_src": p.get("fvg_score_src"), "trade_score_src": p.get("trade_score_src"),
             "entry_type": "both" if p.get("entry_top_filled") and p.get("entry_bottom_filled") else "top" if p.get("entry_top_filled") else "bottom" if p.get("entry_bottom_filled") else "none",
             "entry_top_price": p.get("entry_top_price"), "entry_bottom_price": p.get("entry_bottom_price"),
             "entry_top_filled": p.get("entry_top_filled"), "entry_bottom_filled": p.get("entry_bottom_filled"),
