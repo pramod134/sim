@@ -27,6 +27,52 @@ logger.disabled = True  # Logs disabled; keep strategy logs only
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+DEFAULT_SEED_COUNTS = {
+    "1m": 5000,
+    "3m": 2500,
+    "5m": 1500,
+    "15m": 600,
+    "1h": 400,
+    "1d": 200,
+    "1w": 50,
+}
+
+SEED_COUNT_ENV_MAP = {
+    "1m": "SEED_1M_CANDLES",
+    "3m": "SEED_3M_CANDLES",
+    "5m": "SEED_5M_CANDLES",
+    "15m": "SEED_15M_CANDLES",
+    "1h": "SEED_1H_CANDLES",
+    "1d": "SEED_1D_CANDLES",
+    "1w": "SEED_1W_CANDLES",
+}
+
+
+def _load_seed_counts_from_env() -> Dict[str, int]:
+    """Build per-timeframe seed limits from env vars, with safe defaults."""
+    out: Dict[str, int] = {}
+    for tf, default in DEFAULT_SEED_COUNTS.items():
+        env_name = SEED_COUNT_ENV_MAP[tf]
+        raw = os.getenv(env_name)
+        if raw is None or raw == "":
+            out[tf] = int(default)
+            continue
+        try:
+            val = int(raw)
+            if val <= 0:
+                raise ValueError("must be > 0")
+            out[tf] = val
+        except Exception:
+            logger.warning(
+                "Invalid %s=%r; using default %s=%d",
+                env_name,
+                raw,
+                tf,
+                default,
+            )
+            out[tf] = int(default)
+    return out
+
 
 # ----------------------------- Supabase REST -----------------------------
 
@@ -459,16 +505,8 @@ async def main() -> int:
             # Indicator bot in simulation mode (no DB writes)
             bot = IndicatorBot(engine=engine, sim_mode=True)
 
-            # Seed counts per your spec
-            seed_counts = {
-                "1m": 5000,
-                "3m": 2500,
-                "5m": 1500,
-                "15m": 600,
-                "1h": 400,
-                "1d": 200,
-                "1w": 50,
-            }
+            # Seed counts, configurable via env vars (SEED_*_CANDLES)
+            seed_counts = _load_seed_counts_from_env()
 
             seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
             await bot.bootstrap(symbol, seed)
