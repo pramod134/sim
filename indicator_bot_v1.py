@@ -3,6 +3,7 @@ import os
 import asyncio
 import datetime as dt
 import json
+import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -32,6 +33,7 @@ def print(*args, **kwargs):  # type: ignore[override]
     return None
 
 EASTERN = ZoneInfo("America/New_York")
+ENABLE_SPOT_EVENTS = str(os.getenv("SPOT_EVENTS_ENABLED", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +430,7 @@ class IndicatorBot:
         # ---------------- Diagnostics (minimal, end-of-run only) ----------------
         # spot_event calls per TF
         self._diag_spot_event_calls_by_tf: Dict[str, int] = defaultdict(int)
+        self._stage_timing_ms: Dict[str, Dict[str, float]] = {}
         # liquidity builder calls per TF (TF that triggered rebuild)
         self._diag_liq_builder_calls_by_tf: Dict[str, int] = defaultdict(int)
 
@@ -772,6 +775,7 @@ class IndicatorBot:
         else:
             session_candles = closed_candles
 
+        t_ind0 = time.perf_counter()
         snapshot = compute_all_indicators(closed_candles)
         self._calc1_calls_by_tf[tf] = self._calc1_calls_by_tf.get(tf, 0) + 1
         advanced = compute_advanced_extras(
@@ -781,6 +785,7 @@ class IndicatorBot:
             session_candles=session_candles,
         )
         self._calc2_calls_by_tf[tf] = self._calc2_calls_by_tf.get(tf, 0) + 1
+        indicators_ms = (time.perf_counter() - t_ind0) * 1000.0
         snapshot["extras_advanced"] = advanced
 
         self.last_snapshots.setdefault(sym, {})[tf] = snapshot
@@ -790,6 +795,7 @@ class IndicatorBot:
         # Liquidity pool rebuild on each processed candle (like live flow, if enabled)
         self._maybe_rebuild_liquidity_pool(symbol=sym, trigger_tf=tf)
 
+        t_strat0 = time.perf_counter()
         strategies = evaluate_strategies(
             symbol=sym,
             timeframe=tf,
@@ -807,6 +813,7 @@ class IndicatorBot:
                 if isinstance(v, dict)
             },
         )
+        strategies_ms = (time.perf_counter() - t_strat0) * 1000.0
 
         # ---------------- EVENTS (ensure sim path scans + logs events) ----------------
         self.last_events_state.setdefault(sym, {})
@@ -835,31 +842,38 @@ class IndicatorBot:
         structural_highs = [{"ts": p.get("ts"), "price": p.get("price")} for p in structural_points if p.get("type") == "swing_high" and p.get("label") in ("HH", "LH")]
         structural_lows = [{"ts": p.get("ts"), "price": p.get("price")} for p in structural_points if p.get("type") == "swing_low" and p.get("label") in ("LL", "HL")]
 
-        ev_ctx = SpotEventContext(
-            symbol=sym,
-            timeframe=tf,
-            last_candle=last_candle,
-            liquidity_pool_row=liq_row,
-            structural_highs=structural_highs,
-            structural_lows=structural_lows,
-            swing_highs=swing_highs,
-            swing_lows=swing_lows,
-            structure_state=(snapshot.get("structure_state") or ""),
-            fvgs_now=fvgs_now,
-            fvgs_prev=fvgs_prev,
-            prev_events_latest=prev_latest,
-            prev_events_active=prev_active,
-            prev_events_recent=prev_recent,
-        )
-        ev_out = compute_spot_events(ev_ctx)
-        self._diag_spot_event_calls_by_tf[str(tf)] += 1
-        self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
+        events_ms = 0.0
+        if ENABLE_SPOT_EVENTS:
+            t_ev0 = time.perf_counter()
+            ev_ctx = SpotEventContext(
+                symbol=sym,
+                timeframe=tf,
+                last_candle=last_candle,
+                liquidity_pool_row=liq_row,
+                structural_highs=structural_highs,
+                structural_lows=structural_lows,
+                swing_highs=swing_highs,
+                swing_lows=swing_lows,
+                structure_state=(snapshot.get("structure_state") or ""),
+                fvgs_now=fvgs_now,
+                fvgs_prev=fvgs_prev,
+                prev_events_latest=prev_latest,
+                prev_events_active=prev_active,
+                prev_events_recent=prev_recent,
+            )
+            ev_out = compute_spot_events(ev_ctx)
+            events_ms = (time.perf_counter() - t_ev0) * 1000.0
+            self._diag_spot_event_calls_by_tf[str(tf)] += 1
+            self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
-        self.last_events_state.setdefault(sym, {})[tf] = {
-            "events_latest": ev_out.get("events_latest"),
-            "events_active": ev_out.get("events_active"),
-            "events_recent": ev_out.get("events_recent"),
-        }
+            self.last_events_state.setdefault(sym, {})[tf] = {
+                "events_latest": ev_out.get("events_latest"),
+                "events_active": ev_out.get("events_active"),
+                "events_recent": ev_out.get("events_recent"),
+            }
+        else:
+            ev_out = {"events_latest": {}, "events_active": {}, "events_recent": []}
+            self.last_events_state.setdefault(sym, {})[tf] = ev_out
         self.last_fvgs_cache.setdefault(sym, {})[tf] = list(fvgs_now)
 
         row = {
@@ -870,8 +884,15 @@ class IndicatorBot:
             "extras_advanced": advanced,
             "strategies": strategies,
             "events": self.last_events_state[sym][tf],
+            "timing_ms": {
+                "db_calls": 0.0,
+                "indicator_calc": indicators_ms,
+                "strategy": strategies_ms,
+                "events": events_ms,
+            },
         }
         self.spot_tf_cache[key] = row
+        self._stage_timing_ms[f"{sym}:{tf}"] = row["timing_ms"]
 
         # ---------------- LOGGING RULES ----------------
         self._log_indicators_once(sym, tf, ts_dt, snapshot, advanced, strategies)
@@ -936,7 +957,9 @@ class IndicatorBot:
         for tf in changed_tfs:
             if tf not in self.timeframes:
                 continue
+            t_db0 = time.perf_counter()
             candles = self.engine.get_candles(sym_upper, tf)
+            db_calls_ms = (time.perf_counter() - t_db0) * 1000.0
             if not candles or len(candles) < 10:
                 continue
 
@@ -955,6 +978,7 @@ class IndicatorBot:
             else:
                 session_candles = closed_candles
 
+            t_ind0 = time.perf_counter()
             snapshot = compute_all_indicators(closed_candles)
             advanced = compute_advanced_extras(
                 candles=closed_candles,
@@ -962,6 +986,7 @@ class IndicatorBot:
                 htf_snapshot=None,
                 session_candles=session_candles,
             )
+            indicator_ms = (time.perf_counter() - t_ind0) * 1000.0
 
             pending[tf] = {
                 "closed_candles": closed_candles,
@@ -970,6 +995,8 @@ class IndicatorBot:
                 "extras_advanced": advanced,
                 "last_candle": last_candle,
                 "ts_dt": ts_dt,
+                "db_calls_ms": db_calls_ms,
+                "indicator_ms": indicator_ms,
             }
 
         if not pending:
@@ -1008,6 +1035,7 @@ class IndicatorBot:
 
             cluster = last_candle.get("cluster") or {}
 
+            t_strat0 = time.perf_counter()
             strategies = evaluate_strategies(
                 symbol=sym_upper,
                 timeframe=tf,
@@ -1026,6 +1054,7 @@ class IndicatorBot:
                 },
                 spot_last_candle=spot_last_candle,
             )
+            strategy_ms = (time.perf_counter() - t_strat0) * 1000.0
 
             # ---------------- EVENTS (cache-only) ----------------
             prev_state = self.last_events_state.get(sym_upper, {}).get(tf) or {}
@@ -1060,24 +1089,30 @@ class IndicatorBot:
                 if p.get("type") == "swing_low" and p.get("label") in ("LL", "HL")
             ]
 
-            ev_ctx = SpotEventContext(
-                symbol=sym_upper,
-                timeframe=tf,
-                last_candle=last_candle,
-                liquidity_pool_row=liq_row,
-                structural_highs=structural_highs,
-                structural_lows=structural_lows,
-                swing_highs=swing_highs,
-                swing_lows=swing_lows,
-                structure_state=structure_state or "",
-                fvgs_now=fvgs,
-                fvgs_prev=fvgs_prev,
-                prev_events_latest=prev_latest,
-                prev_events_active=prev_active,
-                prev_events_recent=prev_recent,
-            )
-            ev_out = compute_spot_events(ev_ctx)
-            self._diag_spot_event_calls_by_tf[str(tf)] += 1
+            events_ms = 0.0
+            if ENABLE_SPOT_EVENTS:
+                t_ev0 = time.perf_counter()
+                ev_ctx = SpotEventContext(
+                    symbol=sym_upper,
+                    timeframe=tf,
+                    last_candle=last_candle,
+                    liquidity_pool_row=liq_row,
+                    structural_highs=structural_highs,
+                    structural_lows=structural_lows,
+                    swing_highs=swing_highs,
+                    swing_lows=swing_lows,
+                    structure_state=structure_state or "",
+                    fvgs_now=fvgs,
+                    fvgs_prev=fvgs_prev,
+                    prev_events_latest=prev_latest,
+                    prev_events_active=prev_active,
+                    prev_events_recent=prev_recent,
+                )
+                ev_out = compute_spot_events(ev_ctx)
+                events_ms = (time.perf_counter() - t_ev0) * 1000.0
+                self._diag_spot_event_calls_by_tf[str(tf)] += 1
+            else:
+                ev_out = {"events_latest": {}, "events_active": {}, "events_recent": []}
 
             self.last_events_state.setdefault(sym_upper, {})[tf] = {
                 "events_latest": ev_out.get("events_latest"),
@@ -1097,4 +1132,11 @@ class IndicatorBot:
                 "extras_advanced": extras_advanced,
                 "strategies": strategies,
                 "events": self.last_events_state[sym_upper][tf],
+                "timing_ms": {
+                    "db_calls": float(pack.get("db_calls_ms", 0.0)),
+                    "indicator_calc": float(pack.get("indicator_ms", 0.0)),
+                    "strategy": strategy_ms,
+                    "events": events_ms,
+                },
             }
+            self._stage_timing_ms[f"{sym_upper}:{tf}"] = self.spot_tf_cache[(sym_upper, tf)]["timing_ms"]
