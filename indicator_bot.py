@@ -685,9 +685,38 @@ class IndicatorBot:
         self._perf_stage_totals_by_tf: Dict[str, Dict[str, float]] = {}
         self._perf_stage_counts_by_tf: Dict[str, Dict[str, int]] = {}
         self._perf_end_logged: bool = False
+
+        # Indicator candle windowing mode:
+        # - "compound": use full available history (default)
+        # - "fixed": use rolling window sizes per timeframe
+        self._candle_window_mode: str = (os.getenv("INDICATOR_CANDLE_WINDOW_MODE") or "compound").strip().lower()
+        if self._candle_window_mode not in ("compound", "fixed"):
+            self._candle_window_mode = "compound"
+        self._fixed_window_default: int = max(0, int(os.getenv("INDICATOR_FIXED_CANDLES", "0") or "0"))
+        self._fixed_window_by_tf: Dict[str, int] = {}
+        for tf in SUPPORTED_TFS:
+            env_name = f"INDICATOR_FIXED_CANDLES_{tf.upper()}"
+            raw = os.getenv(env_name)
+            if raw is None or raw == "":
+                self._fixed_window_by_tf[tf] = self._fixed_window_default
+                continue
+            try:
+                self._fixed_window_by_tf[tf] = max(0, int(raw))
+            except Exception:
+                self._fixed_window_by_tf[tf] = self._fixed_window_default
     # ------------------------------------------------------------------ #
     # Simulation entrypoints (sim_worker depends on these)
     # ------------------------------------------------------------------ #
+
+    def _window_candles(self, timeframe: str, candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if self._candle_window_mode != "fixed":
+            return candles
+        n = int(self._fixed_window_by_tf.get(timeframe, self._fixed_window_default) or 0)
+        if n <= 0:
+            return candles
+        if len(candles) <= n:
+            return candles
+        return candles[-n:]
 
     async def bootstrap(self, symbol: str, seed: Dict[str, Any]) -> None:
         """
@@ -720,7 +749,7 @@ class IndicatorBot:
             candles = self.engine.candles.get(sym, {}).get(tf) or []
             if len(candles) < 10:
                 continue
-            closed_candles = candles  # seed is assumed closed/ordered
+            closed_candles = self._window_candles(tf, candles)  # seed is assumed closed/ordered
             last_candle = closed_candles[-1]
             ts_dt = _ensure_dt(last_candle.get("ts"))
 
@@ -1036,6 +1065,7 @@ class IndicatorBot:
                     if now_utc < (raw_last_ts + tf_delta):
                         closed_candles = candles[:-1]
     
+                closed_candles = self._window_candles(tf, closed_candles)
                 if not closed_candles or len(closed_candles) < 10:
                     continue
     
