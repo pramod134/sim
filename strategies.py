@@ -1,4 +1,4 @@
-from strategy_bos_fvg import evaluate_bos_score_v1
+from strategy_bos_fvg_ltf import evaluate_bos_fvg_ltf
 from typing import Dict, Any, List, Optional
 
 
@@ -441,22 +441,19 @@ def evaluate_strategies(
     """
     strategies: List[Dict[str, Any]] = []
 
-    # --- BOS+FVG Score V1 (only active strategy) ---
+    # --- BOS+FVG LTF (only active strategy) ---
     try:
-        ss_map = structure_states_by_tf or {}
-        bos_v1 = evaluate_bos_score_v1(
-            symbol=symbol,
-            timeframe=timeframe,
-            candles=candles,
-            swings=swings,
-            structure_state_tf=ss_map.get(timeframe),
-            structure_state_15m=ss_map.get("15m"),
-            structure_state_1h=ss_map.get("1h"),
-            fvgs=fvgs,
-            spot_last_candle=spot_last_candle,
-        )
-        if bos_v1:
-            strategies.append(bos_v1)
+        if str(timeframe or "").lower() in {"1m", "3m", "5m"}:
+            bos_ltf = evaluate_bos_fvg_ltf(
+                symbol=symbol,
+                timeframe=timeframe,
+                candles=candles,
+                swings=swings,
+                fvgs=fvgs,
+                spot_last_candle=spot_last_candle,
+            )
+            if bos_ltf:
+                strategies.append(bos_ltf)
     except Exception as exc:
         print(
             f"[BOS_FVG_V1] evaluate_strategies failed | Symbol={symbol} | TF={timeframe} | Error={exc}"
