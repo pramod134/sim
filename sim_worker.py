@@ -3,6 +3,9 @@ import asyncio
 import datetime as dt
 import uuid
 import logging
+import io
+from pathlib import Path
+from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
 import httpx
@@ -152,6 +155,63 @@ async def _sb_insert(
     r = await client.post(endpoint, headers=hdrs, json=payload, timeout=30.0)
     r.raise_for_status()
     return r.json() if r.text else None
+
+
+async def _sb_upload_storage_file(
+    client: httpx.AsyncClient,
+    base_url: str,
+    key: str,
+    bucket: str,
+    object_path: str,
+    local_file_path: Path,
+) -> None:
+    endpoint = f"{base_url}/storage/v1/object/{bucket}/{object_path}"
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "x-upsert": "true",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    with local_file_path.open("rb") as fh:
+        r = await client.post(endpoint, headers=headers, content=fh.read(), timeout=60.0)
+    r.raise_for_status()
+
+
+def _make_log_run_id() -> str:
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    suffix = uuid.uuid4().hex[:6]
+    return f"{ts}_{suffix}"
+
+
+class _TeeStream(io.TextIOBase):
+    def __init__(self, primary: io.TextIOBase, mirror: io.TextIOBase) -> None:
+        self._primary = primary
+        self._mirror = mirror
+
+    def write(self, s: str) -> int:
+        written = self._primary.write(s)
+        self._mirror.write(s)
+        self._primary.flush()
+        self._mirror.flush()
+        return written
+
+    def flush(self) -> None:
+        self._primary.flush()
+        self._mirror.flush()
+
+
+@contextmanager
+def _capture_stdout_to_file(log_file_path: Path):
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_file_path.open("a", encoding="utf-8", buffering=1) as fh:
+        original_stdout = os.sys.stdout
+        tee = _TeeStream(original_stdout, fh)
+        os.sys.stdout = tee
+        try:
+            yield
+        finally:
+            tee.flush()
+            os.sys.stdout = original_stdout
 
 
 def _to_iso_utc(value: Any) -> Optional[str]:
@@ -471,18 +531,10 @@ async def main() -> int:
         seed_date = job.get("seed_date")  # expected 'YYYY-MM-DD' in ET
         sim_period = int(job.get("sim_period") or 0)  # days
         run_id = str(job.get("run_id") or "")
-
-        sim_run_logging_enabled = False
-        if run_id:
-            try:
-                await _create_simulation_run(client, run_id=run_id, symbol=symbol, seed_date=seed_date, sim_period=sim_period)
-                sim_run_logging_enabled = True
-                logger.info("created simulation_runs row for run_id=%s symbol=%s", run_id, symbol)
-            except Exception as e:
-                sim_run_logging_enabled = False
-                logger.exception("failed to create simulation_runs row for run_id=%s: %s", run_id, e)
-        else:
-            logger.warning("claimed job for symbol=%s without run_id; simulation_runs logging disabled", symbol)
+        log_date = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+        log_run_id = _make_log_run_id()
+        log_local_path = Path("simulation_logs") / symbol / log_date / f"run_{log_run_id}.txt"
+        log_storage_path = f"{symbol}/{log_date}/run_{log_run_id}.txt"
 
         if not symbol or not seed_date or sim_period <= 0:
             msg = f"Invalid job fields: symbol={symbol!r} seed_date={seed_date!r} sim_period={sim_period!r}"
@@ -499,77 +551,90 @@ async def main() -> int:
         )
 
         try:
-            # Candle engine reads candles from DB via Supabase REST (we’ll patch candle_engine next)
-            engine = CandleEngine(symbols=[symbol])
+            with _capture_stdout_to_file(log_local_path):
+                print(f"[SIM_LOG] local log capture path={log_local_path.as_posix()}")
+                print(f"[SIM_LOG] storage target path=Simulation_runs/{log_storage_path}")
+                # Candle engine reads candles from DB via Supabase REST (we’ll patch candle_engine next)
+                engine = CandleEngine(symbols=[symbol])
 
-            # Indicator bot in simulation mode (no DB writes)
-            bot = IndicatorBot(engine=engine, sim_mode=True)
+                # Indicator bot in simulation mode (no DB writes)
+                bot = IndicatorBot(engine=engine, sim_mode=True)
 
-            # Seed counts, configurable via env vars (SEED_*_CANDLES)
-            seed_counts = _load_seed_counts_from_env()
+                # Seed counts, configurable via env vars (SEED_*_CANDLES)
+                seed_counts = _load_seed_counts_from_env()
 
-            seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
-            await bot.bootstrap(symbol, seed)
-            logger.info("seeded simulation data for symbol=%s", symbol)
+                seed = await engine.load_seed_from_db(symbol=symbol, seed_date_et=seed_date, counts=seed_counts)
+                await bot.bootstrap(symbol, seed)
+                logger.info("seeded simulation data for symbol=%s", symbol)
 
             # ---------------- SEED LOGS ----------------
-            def _ts_str(x: Any) -> str:
-                try:
-                    if isinstance(x, dt.datetime):
-                        t = x
-                    else:
-                        t = dt.datetime.fromisoformat(str(x))
-                    if t.tzinfo is None:
-                        t = t.replace(tzinfo=dt.timezone.utc)
-                    return t.astimezone(dt.timezone.utc).isoformat()
-                except Exception:
-                    return str(x)
+                def _ts_str(x: Any) -> str:
+                    try:
+                        if isinstance(x, dt.datetime):
+                            t = x
+                        else:
+                            t = dt.datetime.fromisoformat(str(x))
+                        if t.tzinfo is None:
+                            t = t.replace(tzinfo=dt.timezone.utc)
+                        return t.astimezone(dt.timezone.utc).isoformat()
+                    except Exception:
+                        return str(x)
 
             # print("[SIM][SEED] Seed candle stats (UTC):")
-            for tf in sorted(seed_counts.keys(), key=lambda s: (len(s), s)):
-                arr = (seed or {}).get(tf) or []
-                n = len(arr)
-                if n == 0:
-                    # print(f"[SIM][SEED] {symbol} {tf}: n=0")
-                    continue
-                first_ts = _ts_str(arr[0].get("ts"))
-                last_ts = _ts_str(arr[-1].get("ts"))
-                # print(f"[SIM][SEED] {symbol} {tf}: n={n} first_ts={first_ts} last_ts={last_ts}")
+                for tf in sorted(seed_counts.keys(), key=lambda s: (len(s), s)):
+                    arr = (seed or {}).get(tf) or []
+                    n = len(arr)
+                    if n == 0:
+                        # print(f"[SIM][SEED] {symbol} {tf}: n=0")
+                        continue
+                    first_ts = _ts_str(arr[0].get("ts"))
+                    last_ts = _ts_str(arr[-1].get("ts"))
+                    # print(f"[SIM][SEED] {symbol} {tf}: n={n} first_ts={first_ts} last_ts={last_ts}")
 
             # Run sim day-by-day starting next trading day 09:30 ET
-            sim_days = await engine.get_sim_days(symbol=symbol, start_after_seed_date_et=seed_date, num_days=sim_period)
+                sim_days = await engine.get_sim_days(symbol=symbol, start_after_seed_date_et=seed_date, num_days=sim_period)
             # print(f"[SIM_WORKER] Sim days: {sim_days[:3]}{'...' if len(sim_days) > 3 else ''}")
 
             # ---------------- LIVE SIM LOGS ----------------
-            first_live_ts: Dict[str, str] = {}
-            last_live_ts: Dict[str, str] = {}
+                first_live_ts: Dict[str, str] = {}
+                last_live_ts: Dict[str, str] = {}
 
-            first_live_to_bot: Optional[Dict[str, Any]] = None
-            last_live_to_bot: Optional[Dict[str, Any]] = None
-            emitted_events = 0
+                first_live_to_bot: Optional[Dict[str, Any]] = None
+                last_live_to_bot: Optional[Dict[str, Any]] = None
+                emitted_events = 0
 
-            for d in sim_days:
-                # IMPORTANT: stream_day() now behaves like live:
-                # - reads ONLY 1m from DB
-                # - enriches 1m via CandleEngine._enrich_candle()
-                # - aggregates 3m/5m/15m/1h from 1m via _aggregate_from_1m()
-                # - emits closed candles for those HTFs
-                async for event in engine.stream_day(symbol=symbol, date_et=d):
-                    # event = {"tf": "1m"/"3m"/..., "candle": enriched {...}}
-                    tf = event["tf"]
-                    candle = event["candle"]
-                    try:
-                        tf_s = str(tf or "")
-                        ts = _ts_str(candle.get("ts"))
-                        if tf_s and tf_s not in first_live_ts:
-                            first_live_ts[tf_s] = ts
-                        if tf_s:
-                            last_live_ts[tf_s] = ts
-                    except Exception:
-                        pass
+                for d in sim_days:
+                    # IMPORTANT: stream_day() now behaves like live:
+                    # - reads ONLY 1m from DB
+                    # - enriches 1m via CandleEngine._enrich_candle()
+                    # - aggregates 3m/5m/15m/1h from 1m via _aggregate_from_1m()
+                    # - emits closed candles for those HTFs
+                    async for event in engine.stream_day(symbol=symbol, date_et=d):
+                        # event = {"tf": "1m"/"3m"/..., "candle": enriched {...}}
+                        tf = event["tf"]
+                        candle = event["candle"]
+                        try:
+                            tf_s = str(tf or "")
+                            ts = _ts_str(candle.get("ts"))
+                            if tf_s and tf_s not in first_live_ts:
+                                first_live_ts[tf_s] = ts
+                            if tf_s:
+                                last_live_ts[tf_s] = ts
+                        except Exception:
+                            pass
 
-                    if first_live_to_bot is None:
-                        first_live_to_bot = {
+                        if first_live_to_bot is None:
+                            first_live_to_bot = {
+                                "tf": tf,
+                                "ts": candle.get("ts"),
+                                "open": candle.get("open"),
+                                "high": candle.get("high"),
+                                "low": candle.get("low"),
+                                "close": candle.get("close"),
+                                "volume": candle.get("volume"),
+                            }
+
+                        last_live_to_bot = {
                             "tf": tf,
                             "ts": candle.get("ts"),
                             "open": candle.get("open"),
@@ -579,105 +644,70 @@ async def main() -> int:
                             "volume": candle.get("volume"),
                         }
 
-                    last_live_to_bot = {
-                        "tf": tf,
-                        "ts": candle.get("ts"),
-                        "open": candle.get("open"),
-                        "high": candle.get("high"),
-                        "low": candle.get("low"),
-                        "close": candle.get("close"),
-                        "volume": candle.get("volume"),
-                    }
-
-                    await bot.on_candle(symbol=symbol, timeframe=tf, candle=candle)
-                    emitted_events += 1
-
-                    if sim_run_logging_enabled and emitted_events % 250 == 0:
-                        try:
-                            event_counters, event_candles = _build_event_payloads()
-                            await _update_simulation_run(
-                                client,
-                                run_id=run_id,
-                                payload={
-                                    "event_counters": event_counters,
-                                    "event_candles": event_candles,
-                                    "simulation_start_time": min(first_live_ts.values()) if first_live_ts else None,
-                                    "simulation_end_time": max(last_live_ts.values()) if last_live_ts else None,
-                                },
-                            )
-                        except Exception as e:
-                            logger.warning("failed incremental simulation_runs update run_id=%s: %s", run_id, e)
+                        await bot.on_candle(symbol=symbol, timeframe=tf, candle=candle)
+                        emitted_events += 1
 
             # print("[SIM][LIVE] Live sim candle range (UTC):")
-            for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
-                pass
+                for tf in sorted(last_live_ts.keys(), key=lambda s: (len(s), s)):
+                    pass
                 # print(f"[SIM][LIVE] {symbol} {tf}: first_live_ts={first_live_ts.get(tf)} last_live_ts={last_live_ts.get(tf)}")
 
             # print(f"[SIM][LIVE] First live candle sent to bot: {first_live_to_bot}")
             # print(f"[SIM][LIVE] Last live candle sent to bot:  {last_live_to_bot}")
             # Compare with CandleEngine emitted stats
-            try:
-                emit_counts = engine.get_live_emit_counts(symbol)
-                first_last = engine.get_live_first_last(symbol)
-                logger.info("engine emitted counts by timeframe: %s", emit_counts)
-                logger.info("engine first emitted candle: %s", first_last.get("first"))
-                logger.info("engine last emitted candle: %s", first_last.get("last"))
-            except Exception as e:
-                logger.warning("engine diagnostics read failed: %s", e)
+                try:
+                    emit_counts = engine.get_live_emit_counts(symbol)
+                    first_last = engine.get_live_first_last(symbol)
+                    logger.info("engine emitted counts by timeframe: %s", emit_counts)
+                    logger.info("engine first emitted candle: %s", first_last.get("first"))
+                    logger.info("engine last emitted candle: %s", first_last.get("last"))
+                except Exception as e:
+                    logger.warning("engine diagnostics read failed: %s", e)
 
             # Print final event summary (totals + per timeframe + per day)
-            try:
-                bot.print_event_summary()
-            except Exception as e:
-                logger.warning("failed to print event summary: %s", e)
+                try:
+                    bot.print_event_summary()
+                except Exception as e:
+                    logger.warning("failed to print event summary: %s", e)
 
             # Print only end-of-run diagnostics counts
-            try:
-                bot.dump_diag_counts(symbol)
-            except Exception as e:
-                logger.warning("failed to print diag counts: %s", e)
+                try:
+                    bot.dump_diag_counts(symbol)
+                except Exception as e:
+                    logger.warning("failed to print diag counts: %s", e)
 
             # Print ONLY the last liquidity pool output (once per sim run)
-            try:
-                print_last_liquidity_output()
-            except Exception as e:
-                logger.warning("failed to print final liquidity output: %s", e)
+                try:
+                    print_last_liquidity_output()
+                except Exception as e:
+                    logger.warning("failed to print final liquidity output: %s", e)
 
             # Print BOS trades once at the end of the simulation.
-            try:
-                print_bos_fvg_htf_final_summaries()
-                print_bos_fvg_ltf_final_summaries()
-            except Exception as e:
-                logger.warning("failed to print BOS_FVG final summaries: %s", e)
-
-            if sim_run_logging_enabled:
                 try:
-                    event_counters, event_candles = _build_event_payloads()
-                    trades_summary, trades = _build_trades_payload(bot, symbol)
-                    await _update_simulation_run(
-                        client,
-                        run_id=run_id,
-                        payload={
-                            "status": "completed",
-                            "end_time": dt.datetime.now(dt.timezone.utc).isoformat(),
-                            "simulation_start_time": min(first_live_ts.values()) if first_live_ts else None,
-                            "simulation_end_time": max(last_live_ts.values()) if last_live_ts else None,
-                            "event_counters": event_counters,
-                            "event_candles": event_candles,
-                            "trades_summary": trades_summary,
-                            "trades": trades,
-                        },
-                    )
-                    logger.info(
-                        "final simulation_runs update saved run_id=%s counters=%s total_trades=%s",
-                        run_id,
-                        event_counters,
-                        trades_summary.get("total_trades"),
-                    )
+                    print_bos_fvg_htf_final_summaries()
+                    print_bos_fvg_ltf_final_summaries()
                 except Exception as e:
-                    logger.exception("failed final simulation_runs update run_id=%s: %s", run_id, e)
+                    logger.warning("failed to print BOS_FVG final summaries: %s", e)
+
+                print(f"[SIM_LOG] local log file complete path={log_local_path.as_posix()}")
 
             await _mark_done(client, symbol_db)
+            try:
+                base_url, key = _sb_env()
+                await _sb_upload_storage_file(
+                    client=client,
+                    base_url=base_url,
+                    key=key,
+                    bucket="Simulation_runs",
+                    object_path=log_storage_path,
+                    local_file_path=log_local_path,
+                )
+                print(f"[SIM_LOG] uploaded log file to Simulation_runs/{log_storage_path}")
+            except Exception as upload_err:
+                print(
+                    f"[SIM_LOG] upload failed local_path={log_local_path.as_posix()} "
+                    f"storage_path=Simulation_runs/{log_storage_path} error={upload_err}"
+                )
             logger.info("simulation completed successfully for symbol=%s", symbol)
             return 0
 
@@ -685,16 +715,6 @@ async def main() -> int:
             msg = f"{type(e).__name__}: {e}"
             logger.exception("simulation failed for symbol=%s: %s", symbol, msg)
             try:
-                if sim_run_logging_enabled and run_id:
-                    await _update_simulation_run(
-                        client,
-                        run_id=run_id,
-                        payload={
-                            "status": "failed",
-                            "end_time": dt.datetime.now(dt.timezone.utc).isoformat(),
-                            "error_message": msg[:2000],
-                        },
-                    )
                 await _mark_error(client, symbol_db or symbol, msg)
             except Exception as e2:
                 logger.exception("failed to mark DB error for symbol=%s: %s", symbol, e2)
