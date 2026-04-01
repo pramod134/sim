@@ -3,6 +3,7 @@ import math
 import asyncio
 import json
 import datetime as dt
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -679,6 +680,11 @@ class IndicatorBot:
         self._last_day_et_by_symbol: Dict[str, str] = {}
         self._diag_cycle_count: int = 0
         self._event_counter_log_every: int = max(0, int(os.getenv("EVENT_COUNTER_LOG_EVERY", "1") or "1"))
+        self._perf_stage_totals: Dict[str, float] = {}
+        self._perf_stage_counts: Dict[str, int] = {}
+        self._perf_stage_totals_by_tf: Dict[str, Dict[str, float]] = {}
+        self._perf_stage_counts_by_tf: Dict[str, Dict[str, int]] = {}
+        self._perf_end_logged: bool = False
     # ------------------------------------------------------------------ #
     # Simulation entrypoints (sim_worker depends on these)
     # ------------------------------------------------------------------ #
@@ -784,7 +790,9 @@ class IndicatorBot:
                 self._liq_builder_calls_total += 1
                 self._liq_builder_calls_by_tf["bootstrap"] = self._liq_builder_calls_by_tf.get("bootstrap", 0) + 1
 
+                t0 = time.perf_counter()
                 pool = build_liquidity_pool(symbol=sym, spot_tf_rows=spot_rows, candle_engine=self.engine)
+                self._record_perf("liquidity_build", time.perf_counter() - t0, tf="bootstrap")
                 if isinstance(pool, dict):
                     self.liq_pool_cache[sym] = {
                         "symbol": sym,
@@ -850,6 +858,46 @@ class IndicatorBot:
         # Run the standard update pipeline
         await self._update_all_symbols()
 
+    def _record_perf(self, stage: str, seconds: float, tf: Optional[str] = None) -> None:
+        if not stage:
+            return
+        safe_seconds = float(max(0.0, seconds))
+        self._perf_stage_totals[stage] = self._perf_stage_totals.get(stage, 0.0) + safe_seconds
+        self._perf_stage_counts[stage] = self._perf_stage_counts.get(stage, 0) + 1
+        if tf:
+            tfx = str(tf)
+            self._perf_stage_totals_by_tf.setdefault(tfx, {})
+            self._perf_stage_counts_by_tf.setdefault(tfx, {})
+            self._perf_stage_totals_by_tf[tfx][stage] = self._perf_stage_totals_by_tf[tfx].get(stage, 0.0) + safe_seconds
+            self._perf_stage_counts_by_tf[tfx][stage] = self._perf_stage_counts_by_tf[tfx].get(stage, 0) + 1
+
+    def _print_perf_summary_once(self, symbol: str) -> None:
+        if self._perf_end_logged:
+            return
+        self._perf_end_logged = True
+        sym = (symbol or "").upper()
+        print(f"[INDICATOR_BOT][PERF] Final performance summary for {sym}")
+        if not self._perf_stage_totals:
+            print("[INDICATOR_BOT][PERF] No timing samples collected.")
+            return
+
+        for stage in sorted(self._perf_stage_totals.keys()):
+            total_s = self._perf_stage_totals.get(stage, 0.0)
+            count = self._perf_stage_counts.get(stage, 0)
+            avg_ms = (total_s / count * 1000.0) if count > 0 else 0.0
+            print(f"[INDICATOR_BOT][PERF] stage={stage} count={count} total_s={total_s:.6f} avg_ms={avg_ms:.3f}")
+
+        for tf in sorted(self._perf_stage_totals_by_tf.keys(), key=lambda x: (len(x), x)):
+            stage_totals = self._perf_stage_totals_by_tf.get(tf, {})
+            stage_counts = self._perf_stage_counts_by_tf.get(tf, {})
+            for stage in sorted(stage_totals.keys()):
+                total_s = stage_totals.get(stage, 0.0)
+                count = stage_counts.get(stage, 0)
+                avg_ms = (total_s / count * 1000.0) if count > 0 else 0.0
+                print(
+                    f"[INDICATOR_BOT][PERF][TF={tf}] stage={stage} count={count} total_s={total_s:.6f} avg_ms={avg_ms:.3f}"
+                )
+
     def print_event_summary(self) -> None:
         """
         sim_worker expects this. Print a compact diagnostic summary.
@@ -891,6 +939,7 @@ class IndicatorBot:
         except Exception as e:
             pass
             # print(f"[INDICATOR_BOT][DIAG] spot_event counters unavailable: {e}")
+        self._print_perf_summary_once(symbol)
 
 
 
@@ -969,6 +1018,7 @@ class IndicatorBot:
             pending: Dict[str, Dict[str, Any]] = {}
     
             for tf in self.timeframes:
+                tf_prep_start = time.perf_counter()
                 candles = symbol_candles.get(tf)
                 if not candles or len(candles) < 10:
                     continue
@@ -1007,16 +1057,20 @@ class IndicatorBot:
                     session_candles = closed_candles
     
                 # Base indicators (single pass)
+                t0 = time.perf_counter()
                 snapshot = compute_all_indicators(closed_candles)
+                self._record_perf("calc1", time.perf_counter() - t0, tf=tf)
                 self._calc1_calls_by_tf[tf] = self._calc1_calls_by_tf.get(tf, 0) + 1
     
                 # Advanced extras (needs base_snapshot)
+                t0 = time.perf_counter()
                 advanced = compute_advanced_extras(
                     candles=closed_candles,
                     base_snapshot=snapshot,
                     htf_snapshot=None,
                     session_candles=session_candles,
                 )
+                self._record_perf("calc2", time.perf_counter() - t0, tf=tf)
                 self._calc2_calls_by_tf[tf] = self._calc2_calls_by_tf.get(tf, 0) + 1
     
                 pending[tf] = {
@@ -1027,6 +1081,7 @@ class IndicatorBot:
                     "last_candle": last_candle,
                     "ts_dt": ts_dt,
                 }
+                self._record_perf("tf_pipeline_prep", time.perf_counter() - tf_prep_start, tf=tf)
     
             if not pending:
                 continue
@@ -1040,11 +1095,13 @@ class IndicatorBot:
             # Enrich VP for each pending TF with multi-TF context
             for tf, pack in pending.items():
                 try:
+                    t0 = time.perf_counter()
                     _enrich_vp_for_tf(
                         current_tf=tf,
                         current_snapshot=pack["snapshot"],
                         snapshots_by_tf=snap_map,
                     )
+                    self._record_perf("vp_enrich", time.perf_counter() - t0, tf=tf)
                 except Exception as e:
                     pass
                     # print(f"[VP][ENRICH] Failed for {sym_upper} {tf}: {e}")
@@ -1069,6 +1126,7 @@ class IndicatorBot:
     
                 cluster = last_candle.get("cluster") or {}
 
+                t0 = time.perf_counter()
                 strategies = evaluate_strategies(
                     symbol=sym_upper,
                     timeframe=tf,
@@ -1087,6 +1145,7 @@ class IndicatorBot:
                     },
                     spot_last_candle=spot_last_candle,
                 )
+                self._record_perf("strategy_eval", time.perf_counter() - t0, tf=tf)
 
                 # ---------------- EVENTS (NEW) ----------------
                 prev_state = self.last_events_state.get(sym_upper, {}).get(tf) or {}
@@ -1148,7 +1207,9 @@ class IndicatorBot:
                     # Fallback: keep a minimal safe representation (still "what we sent")
                     self._last_spot_event_payload = {"repr": repr(ev_ctx)}
 
+                t0 = time.perf_counter()
                 ev_out = compute_spot_events(ev_ctx)
+                self._record_perf("spot_event", time.perf_counter() - t0, tf=tf)
                 self._spot_event_calls_by_tf[tf] = self._spot_event_calls_by_tf.get(tf, 0) + 1
 
                 # Attach extras_advanced + strategies to snapshot so cached "row shape"
@@ -1227,11 +1288,13 @@ class IndicatorBot:
                 # Attribute this pool rebuild to TFs that updated in this cycle
                 for _tf in pending.keys():
                     self._liq_builder_calls_by_tf[_tf] = self._liq_builder_calls_by_tf.get(_tf, 0) + 1
+                t0 = time.perf_counter()
                 pool = build_liquidity_pool(
                     symbol=sym_upper,
                     spot_tf_rows=spot_rows,
                     candle_engine=self.engine,
                 )
+                self._record_perf("liquidity_build", time.perf_counter() - t0, tf="live")
                 # Simulation: NO DB writes (spot_liquidity_pool).
 
                 # Refresh liquidity pool cache from computed pool (NEW)
