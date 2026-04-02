@@ -206,6 +206,7 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
     entry_bottom_filled = bool(trade.get("entry_bottom_filled", False))
     partial_exit_count = _safe_int(trade.get("partial_exit_count"), 0)
     bos_exit_count = _safe_int(trade.get("bos_exit_count"), 0)
+    event_candles_json = json.dumps(trade.get("event_candles") or {}, default=str, sort_keys=True)
     return (
         f"[BOS_FVG_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
         f"TradeID={_log_value(trade.get('trade_id'))} | Side={_log_value(trade.get('side'))} | "
@@ -235,7 +236,7 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
         f"GrossPnLPct={_log_value(trade.get('gross_pnl_pct'))} | MAE={_log_value(trade.get('mae'))} | "
         f"MFE={_log_value(trade.get('mfe'))} | BarsHeld={_log_value(_safe_int(trade.get('bars_held'), 0))} | "
         f"HoldingMinutes={_log_value(_safe_int(trade.get('holding_minutes'), 0))} | Result={_log_value(trade.get('result'))} | "
-        f"Notes={_log_value(trade.get('notes'))}"
+        f"Notes={_log_value(trade.get('notes'))} | EventCandles={event_candles_json}"
     )
 
 
