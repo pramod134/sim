@@ -97,6 +97,31 @@ def _as_et_str(ts_value: Any) -> Optional[str]:
     return dt.astimezone(_ET).isoformat()
 
 
+def _build_candle_index(candles: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    idx: Dict[str, Dict[str, Any]] = {}
+    for candle in candles or []:
+        if not isinstance(candle, dict):
+            continue
+        raw_ts = candle.get("ts") or candle.get("timestamp")
+        iso_ts = _ts_to_iso(_parse_ts(raw_ts))
+        snap = deepcopy(candle)
+        if iso_ts:
+            snap["ts"] = iso_ts
+        for key in {str(raw_ts) if raw_ts is not None else None, iso_ts}:
+            if key:
+                idx[key] = snap
+    return idx
+
+
+def _candle_for_ts(candle_idx: Dict[str, Dict[str, Any]], ts_value: Any) -> Optional[Dict[str, Any]]:
+    if not candle_idx:
+        return None
+    iso_ts = _ts_to_iso(_parse_ts(ts_value))
+    raw_ts = str(ts_value) if ts_value is not None else None
+    found = candle_idx.get(iso_ts or "") or (candle_idx.get(raw_ts or "") if raw_ts else None)
+    return deepcopy(found) if isinstance(found, dict) else None
+
+
 def _latest_swing(swings: Dict[str, Any], swing_type: str, current_ts: Optional[datetime]) -> Optional[Dict[str, Any]]:
     swing_items = (swings or {}).get("swings") or []
     latest = None
@@ -181,6 +206,7 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
     entry_bottom_filled = bool(trade.get("entry_bottom_filled", False))
     partial_exit_count = _safe_int(trade.get("partial_exit_count"), 0)
     bos_exit_count = _safe_int(trade.get("bos_exit_count"), 0)
+    event_candles_json = json.dumps(trade.get("event_candles") or {}, default=str, sort_keys=True)
     return (
         f"[BOS_FVG_V1] FINAL TRADE | Symbol={symbol} | TF={timeframe} | "
         f"TradeID={_log_value(trade.get('trade_id'))} | Side={_log_value(trade.get('side'))} | "
@@ -210,7 +236,7 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
         f"GrossPnLPct={_log_value(trade.get('gross_pnl_pct'))} | MAE={_log_value(trade.get('mae'))} | "
         f"MFE={_log_value(trade.get('mfe'))} | BarsHeld={_log_value(_safe_int(trade.get('bars_held'), 0))} | "
         f"HoldingMinutes={_log_value(_safe_int(trade.get('holding_minutes'), 0))} | Result={_log_value(trade.get('result'))} | "
-        f"Notes={_log_value(trade.get('notes'))}"
+        f"Notes={_log_value(trade.get('notes'))} | EventCandles={event_candles_json}"
     )
 
 
@@ -491,6 +517,7 @@ def evaluate_bos_fvg_ltf(
         }
 
     last_candle = candles[-1] if candles else {}
+    candle_idx = _build_candle_index(candles)
     last_ts_raw = last_candle.get("ts") or last_candle.get("timestamp")
     last_dt = _parse_ts(last_ts_raw)
     last_ts = _ts_to_iso(last_dt) or (str(last_ts_raw) if last_ts_raw is not None else None)
@@ -933,6 +960,16 @@ def evaluate_bos_fvg_ltf(
             "entry_ref_swing_low": p.get("entry_ref_swing_low"),
             "entry_ref_swing_low_ts": p.get("entry_ref_swing_low_ts"),
             "entry_ref_swing_low_score": p.get("entry_ref_swing_low_score"),
+            "event_candles": {
+                "bos_candle": _candle_for_ts(candle_idx, p.get("bos_ts")),
+                "fvg_candle": _candle_for_ts(candle_idx, p.get("fvg_ts")),
+                "entry_candle": _candle_for_ts(candle_idx, p.get("first_fill_ts")),
+                "entry_top_candle": _candle_for_ts(candle_idx, p.get("entry_top_ts")),
+                "entry_bottom_candle": _candle_for_ts(candle_idx, p.get("entry_bottom_ts")),
+                "bos1_exit_candle": _candle_for_ts(candle_idx, p.get("bos1_exit_ts")),
+                "bos2_exit_candle": _candle_for_ts(candle_idx, p.get("bos2_exit_ts")),
+                "exit_candle": _candle_for_ts(candle_idx, final_exit_ts) or deepcopy(last_candle),
+            },
             "notes": p.get("notes", ""),
         }
         print(
