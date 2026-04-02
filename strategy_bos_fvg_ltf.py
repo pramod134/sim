@@ -808,6 +808,11 @@ def evaluate_bos_fvg_ltf(
         # Require entry touches to happen strictly after the FVG-formation bar.
         can_fill_entries = not (fvg_created_dt and last_dt and last_dt <= fvg_created_dt)
         side = pos.get("side")
+        candle_direction = str(last_candle.get("direction") or "").strip().lower()
+        direction_allows_entry = (
+            (side == "long" and candle_direction == "bull")
+            or (side == "short" and candle_direction == "bear")
+        )
         levels: List[Tuple[str, Optional[float], int]] = []
         if side == "long":
             # Long entries are prioritized from FVG top -> bottom.
@@ -826,6 +831,8 @@ def evaluate_bos_fvg_ltf(
             if px is None or planned_shares <= 0:
                 continue
             if not can_fill_entries:
+                continue
+            if not direction_allows_entry:
                 continue
             resolved_trade_score = _safe_float(pos.get("trade_score"))
             if resolved_trade_score is None:
