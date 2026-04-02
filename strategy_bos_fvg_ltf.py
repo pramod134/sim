@@ -731,6 +731,8 @@ def evaluate_bos_fvg_ltf(
                 "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
                 "entry_top_filled": False, "entry_bottom_filled": False,
                 "entry_top_ts": None, "entry_bottom_ts": None,
+                "entry_top_pending_next_open": False, "entry_bottom_pending_next_open": False,
+                "entry_top_touch_ts": None, "entry_bottom_touch_ts": None,
                 "entry_top_shares_planned": _safe_int(pending.get("entry_top_shares"), 0),
                 "entry_bottom_shares_planned": _safe_int(pending.get("entry_bottom_shares"), 0),
                 "entry_top_shares": 0, "entry_bottom_shares": 0,
@@ -830,6 +832,50 @@ def evaluate_bos_fvg_ltf(
         for leg, px, planned_shares in levels:
             if px is None or planned_shares <= 0:
                 continue
+            already = pos.get(f"entry_{leg}_filled", False)
+            pending_next_open = bool(pos.get(f"entry_{leg}_pending_next_open", False))
+            if already:
+                continue
+            if pending_next_open:
+                touch_dt = _parse_ts(pos.get(f"entry_{leg}_touch_ts"))
+                if touch_dt and last_dt and last_dt > touch_dt and open_px is not None:
+                    shares = planned_shares
+                    fill_px = open_px
+                    cost = shares * fill_px
+                    if cost > state["cash"]:
+                        if DEBUG_LOGS:
+                            print(f"[BOS_FVG_V1] entry leg skipped insufficient_cash | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | EntryType={leg} | Needed={cost:.2f} | Cash={state['cash']:.2f}")
+                        pos[f"entry_{leg}_pending_next_open"] = False
+                        pos[f"entry_{leg}_touch_ts"] = None
+                        continue
+                    old_total = _safe_int(pos.get("total_shares_open"), 0)
+                    old_avg = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
+                    new_total = old_total + shares
+                    new_avg = ((old_avg * old_total) + (fill_px * shares)) / new_total if new_total > 0 else fill_px
+                    pos["total_shares_open"] = new_total
+                    pos["avg_entry_price"] = new_avg
+                    pos[f"entry_{leg}_filled"] = True
+                    pos[f"entry_{leg}_ts"] = last_ts
+                    pos[f"entry_{leg}_shares"] = shares
+                    pos[f"entry_{leg}_pending_next_open"] = False
+                    pos[f"entry_{leg}_touch_ts"] = None
+                    state["cash"] -= cost
+                    print(
+                        f"[BOS_FVG_V1] entry filled | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
+                        f"Side={side} | Leg={leg} | FillPrice={fill_px} | Shares={shares} | AvgEntry={new_avg} | OpenShares={new_total}"
+                    )
+                    if not pos.get("first_fill_ts"):
+                        pos["first_fill_ts"] = last_ts
+                        pos["first_fill_ts_et"] = last_ts_et
+                        state["pending_setup"] = None
+                        print(
+                            f"[BOS_FVG_V1] entry fvg snapshot | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
+                            f"FVG_TS={pos.get('fvg_ts')} | Low={_safe_float(pos.get('fvg_low'))} | High={_safe_float(pos.get('fvg_high'))} | "
+                            f"FVGScore={_safe_float(pos.get('fvg_score'))} | TradeScore={_safe_float(pos.get('trade_score'))} | "
+                            f"FVGScoreSrc={pos.get('fvg_score_src')} | TradeScoreSrc={pos.get('trade_score_src')}"
+                        )
+                continue
+
             if not can_fill_entries:
                 continue
             if not direction_allows_entry:
@@ -842,39 +888,10 @@ def evaluate_bos_fvg_ltf(
             if resolved_trade_score < (_safe_float(cfg.get("trade_score_min"), 0.0) or 0.0):
                 continue
             touched = low_px <= px <= high_px
-            already = pos.get(f"entry_{leg}_filled", False)
-            if not touched or already:
+            if not touched:
                 continue
-            shares = planned_shares
-            cost = shares * px
-            if cost > state["cash"]:
-                if DEBUG_LOGS:
-                    print(f"[BOS_FVG_V1] entry leg skipped insufficient_cash | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | EntryType={leg} | Needed={cost:.2f} | Cash={state['cash']:.2f}")
-                continue
-            old_total = _safe_int(pos.get("total_shares_open"), 0)
-            old_avg = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
-            new_total = old_total + shares
-            new_avg = ((old_avg * old_total) + (px * shares)) / new_total if new_total > 0 else px
-            pos["total_shares_open"] = new_total
-            pos["avg_entry_price"] = new_avg
-            pos[f"entry_{leg}_filled"] = True
-            pos[f"entry_{leg}_ts"] = last_ts
-            pos[f"entry_{leg}_shares"] = shares
-            state["cash"] -= cost
-            print(
-                f"[BOS_FVG_V1] entry filled | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
-                f"Side={side} | Leg={leg} | FillPrice={px} | Shares={shares} | AvgEntry={new_avg} | OpenShares={new_total}"
-            )
-            if not pos.get("first_fill_ts"):
-                pos["first_fill_ts"] = last_ts
-                pos["first_fill_ts_et"] = last_ts_et
-                state["pending_setup"] = None
-                print(
-                    f"[BOS_FVG_V1] entry fvg snapshot | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
-                    f"FVG_TS={pos.get('fvg_ts')} | Low={_safe_float(pos.get('fvg_low'))} | High={_safe_float(pos.get('fvg_high'))} | "
-                    f"FVGScore={_safe_float(pos.get('fvg_score'))} | TradeScore={_safe_float(pos.get('trade_score'))} | "
-                    f"FVGScoreSrc={pos.get('fvg_score_src')} | TradeScoreSrc={pos.get('trade_score_src')}"
-                )
+            pos[f"entry_{leg}_pending_next_open"] = True
+            pos[f"entry_{leg}_touch_ts"] = last_ts
 
         if _safe_int(pos.get("total_shares_open"), 0) == 0:
             state["open_position"] = None
