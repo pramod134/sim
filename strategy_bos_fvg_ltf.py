@@ -893,7 +893,11 @@ def evaluate_bos_fvg_ltf(
             pos[f"entry_{leg}_pending_next_open"] = True
             pos[f"entry_{leg}_touch_ts"] = last_ts
 
-        if _safe_int(pos.get("total_shares_open"), 0) == 0:
+        has_pending_entry_fill = any(
+            bool(pos.get(f"entry_{leg}_pending_next_open", False))
+            for leg in ("top", "bottom")
+        )
+        if _safe_int(pos.get("total_shares_open"), 0) == 0 and not has_pending_entry_fill:
             state["open_position"] = None
         else:
             if pos.get("entry_top_filled") and pos.get("entry_bottom_filled"):
