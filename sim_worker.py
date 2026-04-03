@@ -510,13 +510,27 @@ async def _fetch_claimed_job(
     return out
 
 
-def _parallel_workers_from_env() -> int:
-    raw = (os.getenv("SIM_PARALLEL_WORKERS") or "1").strip()
+def _parallel_workers_from_env(job_count: int) -> int:
+    """
+    Resolve worker concurrency for running claimed jobs.
+
+    If SIM_PARALLEL_WORKERS is not set, default to the number of claimed jobs so
+    multiple sim_ticker rows run in parallel without extra configuration.
+    """
+    raw = os.getenv("SIM_PARALLEL_WORKERS")
+    if raw is None or raw.strip() == "":
+        return max(1, int(job_count))
+
+    raw = raw.strip()
     try:
         value = int(raw)
     except Exception:
-        logger.warning("Invalid SIM_PARALLEL_WORKERS=%r; defaulting to 1", raw)
-        return 1
+        logger.warning(
+            "Invalid SIM_PARALLEL_WORKERS=%r; defaulting to claimed jobs=%d",
+            raw,
+            job_count,
+        )
+        return max(1, int(job_count))
     return max(1, value)
 
 
@@ -795,7 +809,7 @@ async def main() -> int:
             logger.info("no sim_ticker rows with start_sim='y'; worker exiting")
             return 0
 
-        max_parallel = _parallel_workers_from_env()
+        max_parallel = _parallel_workers_from_env(len(jobs))
         logger.info("claimed %d simulation jobs; parallel_workers=%d", len(jobs), max_parallel)
 
         if max_parallel == 1 or len(jobs) == 1:
