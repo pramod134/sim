@@ -52,6 +52,30 @@ SEED_COUNT_ENV_MAP = {
     "1w": "SEED_1W_CANDLES",
 }
 
+SIMULATION_RUNS_ALLOWED_COLUMNS = {
+    "id",
+    "start_time",
+    "end_time",
+    "simulation_start_time",
+    "simulation_end_time",
+    "symbol",
+    "strategy_name",
+    "strategy_version",
+    "status",
+    "event_counters",
+    "trades_summary",
+    "config",
+    "error_message",
+    "created_at",
+    "updated_at",
+}
+
+
+def _sanitize_simulation_runs_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only columns that exist in simulation_runs to avoid PostgREST 400 errors."""
+    return {k: v for k, v in payload.items() if k in SIMULATION_RUNS_ALLOWED_COLUMNS}
+
+
 
 def _load_seed_counts_from_env() -> Dict[str, int]:
     """Build per-timeframe seed limits from env vars, with safe defaults."""
@@ -442,7 +466,6 @@ async def _create_simulation_run(
         "status": "running",
         "start_time": now,
         "symbol": symbol,
-        "timeframe": "multi",
         "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
         "strategy_version": "v1.0",
         "error_message": None,
@@ -455,7 +478,7 @@ async def _create_simulation_run(
             base_url,
             key,
             "simulation_runs",
-            payload=full_payload,
+            payload=_sanitize_simulation_runs_payload(full_payload),
             returning="minimal",
         )
     except httpx.HTTPStatusError as e:
@@ -468,7 +491,7 @@ async def _create_simulation_run(
             base_url,
             key,
             "simulation_runs",
-            payload=fallback_payload,
+            payload=_sanitize_simulation_runs_payload(fallback_payload),
             returning="minimal",
         )
 
@@ -481,13 +504,14 @@ async def _update_simulation_run(
     base_url, key = _sb_env()
     body = dict(payload)
     body["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    sanitized = _sanitize_simulation_runs_payload(body)
     await _sb_patch(
         client,
         base_url,
         key,
         "simulation_runs",
         params={"id": f"eq.{run_id}"},
-        payload=body,
+        payload=sanitized,
         returning="minimal",
     )
 
