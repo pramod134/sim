@@ -807,7 +807,13 @@ def evaluate_bos_fvg_ltf(
     if pos and high_px is not None and low_px is not None:
         fvg_created_dt = _parse_ts(pos.get("fvg_ts"))
         can_fill_entries = not (fvg_created_dt and last_dt and last_dt <= fvg_created_dt)
-        last_candle_shape = str(last_candle.get("candle_shape") or "").strip().lower()
+        # CandleEngine writes shape into `shape`; keep `candle_shape` as fallback
+        # for backward compatibility with older snapshots/rows.
+        last_candle_shape = str(
+            last_candle.get("candle_shape")
+            or last_candle.get("shape")
+            or ""
+        ).strip().lower()
         marubozu_shapes = {"marubozu_bull", "marubozu_bear"}
         side = pos.get("side")
         levels: List[Tuple[str, Optional[float], int]] = []
@@ -886,7 +892,10 @@ def evaluate_bos_fvg_ltf(
             continue
 
         if _safe_int(pos.get("total_shares_open"), 0) == 0:
-            state["open_position"] = None
+            # Keep the position object alive while waiting for touches and
+            # next-open fills. Clearing it here drops pending_ts state and
+            # prevents entries from ever filling on subsequent candles.
+            status = "armed_waiting_entry"
         else:
             if pos.get("entry_top_filled") and pos.get("entry_bottom_filled"):
                 state["pending_setup"] = None
