@@ -10,8 +10,6 @@ _BOS_FVG_LTF_STATE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _ET = ZoneInfo("America/New_York")
 DEBUG_LOGS = str(os.getenv("BOS_FVG_DEBUG_LOGS", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 ENTRY_LEG_SHARES = 100
-FVG_HL_BUFFER = 0.3
-FVG_MID_BUFFER = 0.2
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -202,35 +200,9 @@ def _trade_ref_fields(trade: Dict[str, Any]) -> Tuple[Optional[str], Optional[fl
     return trade.get("entry_ref_swing_low_ts"), _safe_float(trade.get("entry_ref_swing_low")), _safe_float(trade.get("entry_ref_swing_low_score"))
 
 
-def _buffered_fvg_levels(fvg_high: Optional[float], fvg_low: Optional[float], side: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    if fvg_high is None or fvg_low is None:
-        return fvg_high, fvg_low, None
-    high = fvg_high + FVG_HL_BUFFER
-    low = fvg_low - FVG_HL_BUFFER
-    mid = (fvg_high + fvg_low) / 2.0
-    if side == "long":
-        mid = mid + FVG_MID_BUFFER
-    elif side == "short":
-        mid = mid - FVG_MID_BUFFER
-    return high, low, mid
-
-
-def _entry_type_label(p: Dict[str, Any]) -> str:
-    legs: List[str] = []
-    for leg in ("top", "middle", "bottom"):
-        if bool(p.get(f"entry_{leg}_filled")):
-            legs.append(leg)
-    if not legs:
-        return "none"
-    if len(legs) == 3:
-        return "all"
-    return "+".join(legs)
-
-
 def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -> str:
     ref_ts, ref_price, ref_score = _trade_ref_fields(trade)
     entry_top_filled = bool(trade.get("entry_top_filled", False))
-    entry_middle_filled = bool(trade.get("entry_middle_filled", False))
     entry_bottom_filled = bool(trade.get("entry_bottom_filled", False))
     partial_exit_count = _safe_int(trade.get("partial_exit_count"), 0)
     bos_exit_count = _safe_int(trade.get("bos_exit_count"), 0)
@@ -248,10 +220,9 @@ def _build_final_trade_log(trade: Dict[str, Any], symbol: str, timeframe: str) -
         f"FVGScore={_log_value(trade.get('fvg_score'))} | TradeScore={_log_value(trade.get('trade_score'))} | "
         f"FVGScoreSrc={_log_value(trade.get('fvg_score_src'))} | TradeScoreSrc={_log_value(trade.get('trade_score_src'))} | "
         f"FVGAfterBOS=true | EntryType={_log_value(trade.get('entry_type'))} | EntryTopPrice={_log_value(trade.get('entry_top_price'))} | "
-        f"EntryMiddlePrice={_log_value(trade.get('entry_middle_price'))} | EntryBottomPrice={_log_value(trade.get('entry_bottom_price'))} | EntryTopFilled={_log_value(entry_top_filled)} | "
-        f"EntryMiddleFilled={_log_value(entry_middle_filled)} | EntryBottomFilled={_log_value(entry_bottom_filled)} | EntryTopTS={_log_value(trade.get('entry_top_ts'))} | "
-        f"EntryMiddleTS={_log_value(trade.get('entry_middle_ts'))} | EntryBottomTS={_log_value(trade.get('entry_bottom_ts'))} | EntryTopShares={_log_value(_safe_int(trade.get('entry_top_shares'), 0))} | "
-        f"EntryMiddleShares={_log_value(_safe_int(trade.get('entry_middle_shares'), 0))} | "
+        f"EntryBottomPrice={_log_value(trade.get('entry_bottom_price'))} | EntryTopFilled={_log_value(entry_top_filled)} | "
+        f"EntryBottomFilled={_log_value(entry_bottom_filled)} | EntryTopTS={_log_value(trade.get('entry_top_ts'))} | "
+        f"EntryBottomTS={_log_value(trade.get('entry_bottom_ts'))} | EntryTopShares={_log_value(_safe_int(trade.get('entry_top_shares'), 0))} | "
         f"EntryBottomShares={_log_value(_safe_int(trade.get('entry_bottom_shares'), 0))} | AvgEntry={_log_value(trade.get('avg_entry_price'))} | "
         f"TotalEntryShares={_log_value(_safe_int(trade.get('total_entry_shares'), 0))} | PartialExitCount={_log_value(partial_exit_count)} | "
         f"BOSExitCount={_log_value(bos_exit_count)} | BOS1RefSwingTS={_log_value(trade.get('bos1_ref_swing_ts'))} | "
@@ -305,10 +276,9 @@ def _compute_final_summary(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
         "avg_mfe": avg(mfes),
         "avg_bars": avg(bars),
         "avg_minutes": avg(mins),
-        "top_only": sum(1 for t in trades if bool(t.get("entry_top_filled", False)) and not bool(t.get("entry_middle_filled", False)) and not bool(t.get("entry_bottom_filled", False))),
-        "middle_only": sum(1 for t in trades if bool(t.get("entry_middle_filled", False)) and not bool(t.get("entry_top_filled", False)) and not bool(t.get("entry_bottom_filled", False))),
-        "bottom_only": sum(1 for t in trades if bool(t.get("entry_bottom_filled", False)) and not bool(t.get("entry_top_filled", False)) and not bool(t.get("entry_middle_filled", False))),
-        "all_entries": sum(1 for t in trades if bool(t.get("entry_top_filled", False)) and bool(t.get("entry_middle_filled", False)) and bool(t.get("entry_bottom_filled", False))),
+        "top_only": sum(1 for t in trades if bool(t.get("entry_top_filled", False)) and not bool(t.get("entry_bottom_filled", False))),
+        "bottom_only": sum(1 for t in trades if bool(t.get("entry_bottom_filled", False))),
+        "both_entries": sum(1 for t in trades if bool(t.get("entry_top_filled", False)) and bool(t.get("entry_bottom_filled", False))),
         "invalid_exits": sum(1 for t in trades if str(t.get("exit_reason_final") or "") == "INVALIDATION"),
         "bos1_exits": sum(1 for t in trades if _safe_int(t.get("partial_exit_count"), 0) >= 1),
         "bos2_exits": sum(1 for t in trades if str(t.get("exit_reason_final") or "") == "BOS2"),
@@ -326,7 +296,7 @@ def _build_final_summary_log(symbol: str, timeframe: str, trades: List[Dict[str,
         f"TotalPnL={summary['total_pnl']} | AvgPnL={summary['avg_pnl']} | AvgPnLPct={summary['avg_pnl_pct']} | "
         f"MaxWin={summary['max_win']} | MaxLoss={summary['max_loss']} | AvgMAE={summary['avg_mae']} | "
         f"AvgMFE={summary['avg_mfe']} | AvgBarsHeld={summary['avg_bars']} | AvgHoldingMinutes={summary['avg_minutes']} | "
-        f"TopOnlyTrades={summary['top_only']} | MiddleOnlyTrades={summary['middle_only']} | BottomOnlyTrades={summary['bottom_only']} | AllEntriesTrades={summary['all_entries']} | "
+        f"TopOnlyTrades={summary['top_only']} | BottomFilledTrades={summary['bottom_only']} | BothEntriesTrades={summary['both_entries']} | "
         f"InvalidationExits={summary['invalid_exits']} | BOS1Exits={summary['bos1_exits']} | BOS2Exits={summary['bos2_exits']} | "
         f"BreakevenExits={summary['be_exits']} | EODExits={summary['eod_exits']}"
     )
@@ -673,9 +643,8 @@ def evaluate_bos_fvg_ltf(
             state["trade_id_counter"] += 1
             trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
             top_shares = ENTRY_LEG_SHARES
-            middle_shares = ENTRY_LEG_SHARES
             bottom_shares = ENTRY_LEG_SHARES
-            total_shares = top_shares + middle_shares + bottom_shares
+            total_shares = top_shares + bottom_shares
             state["pending_setup"] = {
                 "trade_id": trade_id,
                 "side": chosen_side,
@@ -683,7 +652,6 @@ def evaluate_bos_fvg_ltf(
                 "bos_ts_et": last_ts_et,
                 "shares_total": total_shares,
                 "entry_top_shares": top_shares,
-                "entry_middle_shares": middle_shares,
                 "entry_bottom_shares": bottom_shares,
                 "entry_ref_swing_high": recent_high_price,
                 "entry_ref_swing_high_ts": recent_high_ts,
@@ -749,7 +717,6 @@ def evaluate_bos_fvg_ltf(
             f = pending["fvg"]
             fvg_high = _safe_float(f.get("high"))
             fvg_low = _safe_float(f.get("low"))
-            buffered_fvg_high, buffered_fvg_low, buffered_fvg_mid = _buffered_fvg_levels(fvg_high, fvg_low, str(pending.get("side") or ""))
             state["open_position"] = {
                 "trade_id": pending.get("trade_id"), "side": pending.get("side"),
                 "bos_ts": pending.get("bos_ts"), "bos_ts_et": pending.get("bos_ts_et"),
@@ -761,13 +728,12 @@ def evaluate_bos_fvg_ltf(
                 "fvg_score_src": f.get("fvg_score_src"),
                 "trade_score_src": f.get("trade_score_src"),
                 "fvg_after_bos": True,
-                "entry_top_price": buffered_fvg_high, "entry_middle_price": buffered_fvg_mid, "entry_bottom_price": buffered_fvg_low,
-                "entry_top_filled": False, "entry_middle_filled": False, "entry_bottom_filled": False,
-                "entry_top_ts": None, "entry_middle_ts": None, "entry_bottom_ts": None,
+                "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
+                "entry_top_filled": False, "entry_bottom_filled": False,
+                "entry_top_ts": None, "entry_bottom_ts": None,
                 "entry_top_shares_planned": _safe_int(pending.get("entry_top_shares"), 0),
-                "entry_middle_shares_planned": _safe_int(pending.get("entry_middle_shares"), 0),
                 "entry_bottom_shares_planned": _safe_int(pending.get("entry_bottom_shares"), 0),
-                "entry_top_shares": 0, "entry_middle_shares": 0, "entry_bottom_shares": 0,
+                "entry_top_shares": 0, "entry_bottom_shares": 0,
                 "total_shares_open": 0, "avg_entry_price": None,
                 "first_fill_ts": None, "first_fill_ts_et": None,
                 "first_opposite_bos_exit_done": False, "opposite_bos_exit_count": 0,
@@ -826,10 +792,8 @@ def evaluate_bos_fvg_ltf(
                 pos["trade_score"] = _safe_float(refreshed_selected_fvg.get("trade_score"))
                 pos["fvg_score_src"] = refreshed_selected_fvg.get("fvg_score_src")
                 pos["trade_score_src"] = refreshed_selected_fvg.get("trade_score_src")
-                buffered_fvg_high, buffered_fvg_low, buffered_fvg_mid = _buffered_fvg_levels(pos["fvg_high"], pos["fvg_low"], str(pos.get("side") or ""))
-                pos["entry_top_price"] = buffered_fvg_high
-                pos["entry_middle_price"] = buffered_fvg_mid
-                pos["entry_bottom_price"] = buffered_fvg_low
+                pos["entry_top_price"] = pos["fvg_high"]
+                pos["entry_bottom_price"] = pos["fvg_low"]
         if bool(pos.get("fvg_filled", False)):
             pending_now = state.get("pending_setup")
             if pending_now and pending_now.get("trade_id") == pos.get("trade_id"):
@@ -847,13 +811,11 @@ def evaluate_bos_fvg_ltf(
         if side == "long":
             levels = [
                 ("top", _safe_float(pos.get("entry_top_price")), _safe_int(pos.get("entry_top_shares_planned"), _safe_int(pos.get("entry_top_shares"), 0))),
-                ("middle", _safe_float(pos.get("entry_middle_price")), _safe_int(pos.get("entry_middle_shares_planned"), _safe_int(pos.get("entry_middle_shares"), 0))),
                 ("bottom", _safe_float(pos.get("entry_bottom_price")), _safe_int(pos.get("entry_bottom_shares_planned"), _safe_int(pos.get("entry_bottom_shares"), 0))),
             ]
         elif side == "short":
             levels = [
                 ("bottom", _safe_float(pos.get("entry_bottom_price")), _safe_int(pos.get("entry_bottom_shares_planned"), _safe_int(pos.get("entry_bottom_shares"), 0))),
-                ("middle", _safe_float(pos.get("entry_middle_price")), _safe_int(pos.get("entry_middle_shares_planned"), _safe_int(pos.get("entry_middle_shares"), 0))),
                 ("top", _safe_float(pos.get("entry_top_price")), _safe_int(pos.get("entry_top_shares_planned"), _safe_int(pos.get("entry_top_shares"), 0))),
             ]
 
@@ -888,10 +850,7 @@ def evaluate_bos_fvg_ltf(
             pos[f"entry_{leg}_filled"] = True
             pos[f"entry_{leg}_ts"] = last_ts
             pos[f"entry_{leg}_shares"] = shares
-            if side == "short":
-                state["cash"] += cost
-            else:
-                state["cash"] -= cost
+            state["cash"] -= cost
             print(
                 f"[BOS_FVG_V1] entry filled | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
                 f"Side={side} | Leg={leg} | FillPrice={px} | Shares={shares} | AvgEntry={new_avg} | OpenShares={new_total}"
@@ -910,7 +869,7 @@ def evaluate_bos_fvg_ltf(
         if _safe_int(pos.get("total_shares_open"), 0) == 0:
             state["open_position"] = None
         else:
-            if pos.get("entry_top_filled") and pos.get("entry_middle_filled") and pos.get("entry_bottom_filled"):
+            if pos.get("entry_top_filled") and pos.get("entry_bottom_filled"):
                 state["pending_setup"] = None
             status = "in_position"
 
@@ -946,10 +905,7 @@ def evaluate_bos_fvg_ltf(
         else:
             pnl_close = (exit_price - avg_entry) * shares_open
         total_pnl = (_safe_float(p.get("realized_pnl"), 0.0) or 0.0) + pnl_close
-        if side == "short":
-            state["cash"] -= shares_open * exit_price
-        else:
-            state["cash"] += shares_open * exit_price
+        state["cash"] += shares_open * exit_price
 
         entry_dt = _parse_ts(p.get("first_fill_ts"))
         final_exit_ts = exit_ts_override or last_ts
@@ -965,12 +921,12 @@ def evaluate_bos_fvg_ltf(
             "fvg_high": p.get("fvg_high"), "fvg_low": p.get("fvg_low"), "fvg_after_bos": True,
             "fvg_score": p.get("fvg_score"), "trade_score": p.get("trade_score"),
             "fvg_score_src": p.get("fvg_score_src"), "trade_score_src": p.get("trade_score_src"),
-            "entry_type": _entry_type_label(p),
-            "entry_top_price": p.get("entry_top_price"), "entry_middle_price": p.get("entry_middle_price"), "entry_bottom_price": p.get("entry_bottom_price"),
-            "entry_top_filled": p.get("entry_top_filled"), "entry_middle_filled": p.get("entry_middle_filled"), "entry_bottom_filled": p.get("entry_bottom_filled"),
-            "entry_top_ts": p.get("entry_top_ts"), "entry_middle_ts": p.get("entry_middle_ts"), "entry_bottom_ts": p.get("entry_bottom_ts"),
-            "entry_top_shares": _safe_int(p.get("entry_top_shares"), 0), "entry_middle_shares": _safe_int(p.get("entry_middle_shares"), 0), "entry_bottom_shares": _safe_int(p.get("entry_bottom_shares"), 0),
-            "avg_entry_price": avg_entry, "total_entry_shares": _safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_middle_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0),
+            "entry_type": "both" if p.get("entry_top_filled") and p.get("entry_bottom_filled") else "top" if p.get("entry_top_filled") else "bottom" if p.get("entry_bottom_filled") else "none",
+            "entry_top_price": p.get("entry_top_price"), "entry_bottom_price": p.get("entry_bottom_price"),
+            "entry_top_filled": p.get("entry_top_filled"), "entry_bottom_filled": p.get("entry_bottom_filled"),
+            "entry_top_ts": p.get("entry_top_ts"), "entry_bottom_ts": p.get("entry_bottom_ts"),
+            "entry_top_shares": _safe_int(p.get("entry_top_shares"), 0), "entry_bottom_shares": _safe_int(p.get("entry_bottom_shares"), 0),
+            "avg_entry_price": avg_entry, "total_entry_shares": _safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0),
             "entry_ts": p.get("first_fill_ts"), "entry_ts_et": p.get("first_fill_ts_et"),
             "exit_ts": final_exit_ts, "exit_ts_et": final_exit_ts_et, "exit_price": exit_price,
             "exit_reason_final": exit_reason, "exit_source": exit_source,
@@ -985,7 +941,7 @@ def evaluate_bos_fvg_ltf(
             "invalidation_exit_triggered": exit_reason == "INVALIDATION",
             "eod_exit_triggered": exit_reason == "EOD",
             "gross_pnl": total_pnl,
-            "gross_pnl_pct": ((total_pnl / (avg_entry * (_safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_middle_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0)))) * 100.0) if avg_entry > 0 and (_safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_middle_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0)) > 0 else 0.0,
+            "gross_pnl_pct": ((total_pnl / (avg_entry * (_safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0)))) * 100.0) if avg_entry > 0 and (_safe_int(p.get("entry_top_shares"), 0) + _safe_int(p.get("entry_bottom_shares"), 0)) > 0 else 0.0,
             "result": "profit" if total_pnl > 0 else "loss" if total_pnl < 0 else "flat",
             "bars_held": p.get("bars_held", 0), "holding_minutes": holding_minutes,
             "mae": (avg_entry - lowest) if side == "long" else (highest - avg_entry),
@@ -1006,7 +962,6 @@ def evaluate_bos_fvg_ltf(
                 "fvg_candle": _candle_for_ts(candle_idx, p.get("fvg_ts")),
                 "entry_candle": _candle_for_ts(candle_idx, p.get("first_fill_ts")),
                 "entry_top_candle": _candle_for_ts(candle_idx, p.get("entry_top_ts")),
-                "entry_middle_candle": _candle_for_ts(candle_idx, p.get("entry_middle_ts")),
                 "entry_bottom_candle": _candle_for_ts(candle_idx, p.get("entry_bottom_ts")),
                 "bos1_exit_candle": _candle_for_ts(candle_idx, p.get("bos1_exit_ts")),
                 "bos2_exit_candle": _candle_for_ts(candle_idx, p.get("bos2_exit_ts")),
@@ -1059,7 +1014,8 @@ def evaluate_bos_fvg_ltf(
     pos = state.get("open_position")
     if pos and close_px is not None:
         side = pos.get("side", "long")
-        fvg_high, fvg_low, _ = _buffered_fvg_levels(_safe_float(pos.get("fvg_high")), _safe_float(pos.get("fvg_low")), side)
+        fvg_low = _safe_float(pos.get("fvg_low"))
+        fvg_high = _safe_float(pos.get("fvg_high"))
 
         # Opposite BOS exits (post-entry only)
         first_fill_dt = _parse_ts(pos.get("first_fill_ts"))
@@ -1078,10 +1034,7 @@ def evaluate_bos_fvg_ltf(
                         avg_entry = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
                         pnl_partial = (close_px - avg_entry) * exit_shares if side == "long" else (avg_entry - close_px) * exit_shares
                         pos["realized_pnl"] = (_safe_float(pos.get("realized_pnl"), 0.0) or 0.0) + pnl_partial
-                        if side == "short":
-                            state["cash"] -= exit_shares * close_px
-                        else:
-                            state["cash"] += exit_shares * close_px
+                        state["cash"] += exit_shares * close_px
                         pos["total_shares_open"] = shares_open - exit_shares
                         pos["first_opposite_bos_exit_done"] = True
                         pos["bos1_exit_ts"] = last_ts
