@@ -888,7 +888,10 @@ def evaluate_bos_fvg_ltf(
             pos[f"entry_{leg}_filled"] = True
             pos[f"entry_{leg}_ts"] = last_ts
             pos[f"entry_{leg}_shares"] = shares
-            state["cash"] -= cost
+            if side == "short":
+                state["cash"] += cost
+            else:
+                state["cash"] -= cost
             print(
                 f"[BOS_FVG_V1] entry filled | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
                 f"Side={side} | Leg={leg} | FillPrice={px} | Shares={shares} | AvgEntry={new_avg} | OpenShares={new_total}"
@@ -943,7 +946,10 @@ def evaluate_bos_fvg_ltf(
         else:
             pnl_close = (exit_price - avg_entry) * shares_open
         total_pnl = (_safe_float(p.get("realized_pnl"), 0.0) or 0.0) + pnl_close
-        state["cash"] += shares_open * exit_price
+        if side == "short":
+            state["cash"] -= shares_open * exit_price
+        else:
+            state["cash"] += shares_open * exit_price
 
         entry_dt = _parse_ts(p.get("first_fill_ts"))
         final_exit_ts = exit_ts_override or last_ts
@@ -1072,7 +1078,10 @@ def evaluate_bos_fvg_ltf(
                         avg_entry = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
                         pnl_partial = (close_px - avg_entry) * exit_shares if side == "long" else (avg_entry - close_px) * exit_shares
                         pos["realized_pnl"] = (_safe_float(pos.get("realized_pnl"), 0.0) or 0.0) + pnl_partial
-                        state["cash"] += exit_shares * close_px
+                        if side == "short":
+                            state["cash"] -= exit_shares * close_px
+                        else:
+                            state["cash"] += exit_shares * close_px
                         pos["total_shares_open"] = shares_open - exit_shares
                         pos["first_opposite_bos_exit_done"] = True
                         pos["bos1_exit_ts"] = last_ts
