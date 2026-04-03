@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
+import re
 
 import httpx
 
@@ -242,6 +243,79 @@ def _normalize_trade(trade: Dict[str, Any]) -> Dict[str, Any]:
         "reason_exit": trade.get("exit_reason"),
     }
 
+
+
+
+def _to_snake_case_key(value: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "").strip())
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    return s.strip("_").lower()
+
+
+def _coerce_summary_value(raw: Any) -> Any:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float, bool)):
+        return raw
+    s = str(raw).strip()
+    if s == "":
+        return ""
+    low = s.lower()
+    if low in {"true", "false"}:
+        return low == "true"
+    if re.fullmatch(r"[-+]?\d+", s):
+        try:
+            return int(s)
+        except Exception:
+            return s
+    if re.fullmatch(r"[-+]?\d*\.\d+", s):
+        try:
+            return float(s)
+        except Exception:
+            return s
+    return s
+
+
+def _parse_final_summary_lines(log_file_path: Path) -> Dict[str, Any]:
+    summaries: Dict[str, Any] = {}
+    if not log_file_path.exists():
+        return summaries
+
+    with log_file_path.open("r", encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            if "FINAL SUMMARY |" not in line:
+                continue
+
+            prefix, tail = line.split("FINAL SUMMARY |", 1)
+            strategy_tag = ""
+            if "[" in prefix and "]" in prefix:
+                try:
+                    strategy_tag = prefix[prefix.rfind("[") + 1 : prefix.rfind("]")].strip()
+                except Exception:
+                    strategy_tag = ""
+
+            parsed: Dict[str, Any] = {}
+            for part in tail.split("|"):
+                if "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                key = _to_snake_case_key(k)
+                parsed[key] = _coerce_summary_value(v.strip())
+
+            timeframe = str(parsed.pop("tf", parsed.pop("timeframe", "")) or "").strip()
+            if not timeframe:
+                continue
+
+            tf_summary = summaries.get(timeframe)
+            if not isinstance(tf_summary, dict):
+                tf_summary = {}
+                summaries[timeframe] = tf_summary
+
+            if strategy_tag:
+                tf_summary["strategy_tag"] = strategy_tag
+            tf_summary.update(parsed)
+
+    return summaries
 
 def _build_event_payloads() -> tuple[Dict[str, int], Dict[str, list[str]]]:
     trig_counts = getattr(spot_event_module, "_SPOT_EVENT_TRIGGER_COUNTS", {}) or {}
@@ -588,6 +662,16 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
         sim_period,
         run_id,
     )
+    try:
+        await _create_simulation_run(
+            client=client,
+            run_id=run_id,
+            symbol=symbol,
+            seed_date=str(seed_date),
+            sim_period=sim_period,
+        )
+    except Exception as e:
+        logger.warning("failed to create simulation_runs row for run_id=%s: %s", run_id, e)
 
     try:
         with _capture_stdout_to_file(log_local_path):
@@ -730,6 +814,42 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
 
             print(f"[SIM_LOG] local log file complete path={log_local_path.as_posix()}")
 
+        event_counters, event_candles = _build_event_payloads()
+        parsed_tf_summaries = _parse_final_summary_lines(log_local_path)
+        base_trades_summary, trades = _build_trades_payload(bot, symbol)
+        trades_summary_payload: Dict[str, Any] = {}
+        if parsed_tf_summaries:
+            trades_summary_payload.update(parsed_tf_summaries)
+        elif base_trades_summary:
+            trades_summary_payload["multi"] = dict(base_trades_summary)
+
+        sim_start_ts = _to_iso_utc((first_live_to_bot or {}).get("ts"))
+        sim_end_ts = _to_iso_utc((last_live_to_bot or {}).get("ts"))
+        end_time = dt.datetime.now(dt.timezone.utc).isoformat()
+        await _update_simulation_run(
+            client,
+            run_id,
+            payload={
+                "symbol": symbol,
+                "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
+                "strategy_version": "v1.0",
+                "status": "done",
+                "end_time": end_time,
+                "simulation_start_time": sim_start_ts,
+                "simulation_end_time": sim_end_ts,
+                "event_counters": event_counters,
+                "event_candles": event_candles,
+                "trades_summary": trades_summary_payload,
+                "trades": trades,
+                "config": {
+                    "symbol": symbol,
+                    "seed_date": seed_date,
+                    "sim_period": sim_period,
+                    "seed_counts": seed_counts,
+                },
+                "error_message": None,
+            },
+        )
         await _mark_done(client, symbol_db)
         try:
             base_url, key = _sb_env()
@@ -753,6 +873,28 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         logger.exception("simulation failed for symbol=%s: %s", symbol, msg)
+        try:
+            await _update_simulation_run(
+                client,
+                run_id,
+                payload={
+                    "symbol": symbol,
+                    "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
+                    "strategy_version": "v1.0",
+                    "status": "error",
+                    "end_time": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "simulation_start_time": None,
+                    "simulation_end_time": None,
+                    "error_message": msg[:2000],
+                    "config": {
+                        "symbol": symbol,
+                        "seed_date": seed_date,
+                        "sim_period": sim_period,
+                    },
+                },
+            )
+        except Exception as e3:
+            logger.warning("failed to update simulation_runs error payload run_id=%s: %s", run_id, e3)
         try:
             await _mark_error(client, symbol_db or symbol, msg)
         except Exception as e2:
