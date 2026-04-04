@@ -289,6 +289,9 @@ def _bridge_insert_rows(
                 "tp_level": None,
                 "status": "nt-waiting",
                 "manage": None,
+                "db_new_insert_confirmed": False,
+                "db_active_seen": False,
+                "db_active_status": None,
                 "end_time_et": end_time_et,
                 "leg": leg,
                 "trade": trade,
@@ -455,6 +458,30 @@ def get_live_bridge_rows() -> List[Dict[str, Any]]:
     for state in _BOS_FVG_LTF_STATE.values():
         rows.extend(deepcopy(state.get("bridge_rows") or []))
     return rows
+
+
+def apply_live_bridge_db_state(updates: List[Dict[str, Any]]) -> None:
+    if not updates:
+        return
+    keyed: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+    for u in updates:
+        setup_id = str(u.get("setup_id") or "").strip()
+        leg = _safe_int(u.get("leg"), 0)
+        trade = _safe_int(u.get("trade"), 0)
+        if not setup_id or leg <= 0 or trade <= 0:
+            continue
+        keyed[(setup_id, leg, trade)] = u
+    if not keyed:
+        return
+    for state in _BOS_FVG_LTF_STATE.values():
+        for row in state.get("bridge_rows") or []:
+            key = (str(row.get("setup_id") or "").strip(), _safe_int(row.get("leg"), 0), _safe_int(row.get("trade"), 0))
+            incoming = keyed.get(key)
+            if not incoming:
+                continue
+            row["db_new_insert_confirmed"] = bool(incoming.get("db_new_insert_confirmed", False))
+            row["db_active_seen"] = bool(incoming.get("db_active_seen", False))
+            row["db_active_status"] = incoming.get("db_active_status")
 
 
 def _normalize_fvg_direction(v: Any) -> str:
@@ -778,9 +805,13 @@ def evaluate_bos_fvg_ltf(
         pending = state["pending_setup"]
         pending_setup_id = (pending or {}).get("setup_id") or state.get("bridge_current_setup_id")
         pending_rows = _bridge_setup_rows(state, pending_setup_id)
-        has_live_rows = any(r.get("status") == "nt-managing" for r in pending_rows)
-        if pending and not has_live_rows:
-            waiting_rows = [r for r in pending_rows if r.get("status") == "nt-waiting"]
+        has_live_rows = any(r.get("db_active_status") == "nt-managing" for r in pending_rows)
+        has_active_rows = any(bool(r.get("db_active_seen")) for r in pending_rows)
+        all_waiting_rows = bool(pending_rows) and has_active_rows and all(
+            r.get("db_active_status") == "nt-waiting" for r in pending_rows if r.get("db_active_seen")
+        )
+        if pending and all_waiting_rows and not has_live_rows:
+            waiting_rows = [r for r in pending_rows if r.get("db_active_seen") and r.get("db_active_status") == "nt-waiting"]
             _bridge_update_rows(waiting_rows, {"manage": "C"}, "new_bos_cancel")
             state["pending_setup"] = None
         if not pending or not has_live_rows:
@@ -877,61 +908,67 @@ def evaluate_bos_fvg_ltf(
 
     # Entry fills (touch-based at price level)
     pending = state["pending_setup"]
+    pending_setup_rows = _bridge_setup_rows(state, (pending or {}).get("setup_id"))
+    phase1_insert_confirmed = bool(pending_setup_rows) and all(bool(r.get("db_new_insert_confirmed")) for r in pending_setup_rows)
     if pending and pending.get("fvg") and high_px is not None and low_px is not None:
-        if not state["open_position"]:
-            f = pending["fvg"]
-            fvg_high = _safe_float(f.get("high"))
-            fvg_low = _safe_float(f.get("low"))
-            state["open_position"] = {
-                "trade_id": pending.get("trade_id"), "side": pending.get("side"),
-                "setup_id": pending.get("setup_id"),
-                "bos_ts": pending.get("bos_ts"), "bos_ts_et": pending.get("bos_ts_et"),
-                "fvg_ts": f.get("created_ts"), "fvg_high": fvg_high, "fvg_low": fvg_low,
-                "fvg_filled": bool(f.get("filled", False)),
-                "fvg_filled_ts": f.get("filled_ts"),
-                "fvg_score": _safe_float(f.get("fvg_score")),
-                "trade_score": _safe_float(f.get("trade_score")),
-                "fvg_score_src": f.get("fvg_score_src"),
-                "trade_score_src": f.get("trade_score_src"),
-                "fvg_after_bos": True,
-                "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
-                "entry_top_filled": False, "entry_bottom_filled": False,
-                "entry_top_ts": None, "entry_bottom_ts": None,
-                "entry_top_shares_planned": _safe_int(pending.get("entry_top_shares"), 0),
-                "entry_bottom_shares_planned": _safe_int(pending.get("entry_bottom_shares"), 0),
-                "entry_top_shares": 0, "entry_bottom_shares": 0,
-                "total_shares_open": 0, "avg_entry_price": None,
-                "first_fill_ts": None, "first_fill_ts_et": None,
-                "first_opposite_bos_exit_done": False, "opposite_bos_exit_count": 0,
-                "bos1_ref_swing_ts": None, "bos1_exit_ts": None,
-                "bos2_ref_swing_ts": None, "bos2_exit_ts": None,
-                "breakeven_armed_ts": None,
-                "consumed_opposite_bos_keys": set(),
-                "stop_mode": "fvg_invalidation", "breakeven_price": None,
-                "eod_exit_pending_day": None,
-                "last_rth_1m_close": None,
-                "last_rth_1m_close_ts": None,
-                "realized_pnl": 0.0,
-                "entry_ref_swing_high": pending.get("entry_ref_swing_high"),
-                "entry_ref_swing_high_ts": pending.get("entry_ref_swing_high_ts"),
-                "entry_ref_swing_high_score": pending.get("entry_ref_swing_high_score"),
-                "entry_ref_swing_low": pending.get("entry_ref_swing_low"),
-                "entry_ref_swing_low_ts": pending.get("entry_ref_swing_low_ts"),
-                "entry_ref_swing_low_score": pending.get("entry_ref_swing_low_score"),
-                "bos_score_total": pending.get("score_total", 0.0),
-                "bos_score_threshold": cfg["score_min"],
-                "bos_momentum_value": pending.get("mom_value", 0.0),
-                "bos_volume_value": pending.get("vol_value", 0.0),
-                "bos_close_strength_value": pending.get("close_strength_value", 0.0),
-                "bos_break_distance_value": pending.get("break_distance_value", 0.0),
-                "structure_state_tf": pending.get("structure_state_tf"),
-                "structure_state_15m": pending.get("structure_state_15m"),
-                "structure_state_1h": pending.get("structure_state_1h"),
-                "highest_price_during_trade": high_px,
-                "lowest_price_during_trade": low_px,
-                "bars_held": 0,
-                "notes": "",
-            }
+        if not phase1_insert_confirmed:
+            status = "pending_setup"
+            skip_reason = "awaiting_new_trades_insert_confirmation"
+        else:
+            if not state["open_position"]:
+                f = pending["fvg"]
+                fvg_high = _safe_float(f.get("high"))
+                fvg_low = _safe_float(f.get("low"))
+                state["open_position"] = {
+                    "trade_id": pending.get("trade_id"), "side": pending.get("side"),
+                    "setup_id": pending.get("setup_id"),
+                    "bos_ts": pending.get("bos_ts"), "bos_ts_et": pending.get("bos_ts_et"),
+                    "fvg_ts": f.get("created_ts"), "fvg_high": fvg_high, "fvg_low": fvg_low,
+                    "fvg_filled": bool(f.get("filled", False)),
+                    "fvg_filled_ts": f.get("filled_ts"),
+                    "fvg_score": _safe_float(f.get("fvg_score")),
+                    "trade_score": _safe_float(f.get("trade_score")),
+                    "fvg_score_src": f.get("fvg_score_src"),
+                    "trade_score_src": f.get("trade_score_src"),
+                    "fvg_after_bos": True,
+                    "entry_top_price": fvg_high, "entry_bottom_price": fvg_low,
+                    "entry_top_filled": False, "entry_bottom_filled": False,
+                    "entry_top_ts": None, "entry_bottom_ts": None,
+                    "entry_top_shares_planned": _safe_int(pending.get("entry_top_shares"), 0),
+                    "entry_bottom_shares_planned": _safe_int(pending.get("entry_bottom_shares"), 0),
+                    "entry_top_shares": 0, "entry_bottom_shares": 0,
+                    "total_shares_open": 0, "avg_entry_price": None,
+                    "first_fill_ts": None, "first_fill_ts_et": None,
+                    "first_opposite_bos_exit_done": False, "opposite_bos_exit_count": 0,
+                    "bos1_ref_swing_ts": None, "bos1_exit_ts": None,
+                    "bos2_ref_swing_ts": None, "bos2_exit_ts": None,
+                    "breakeven_armed_ts": None,
+                    "consumed_opposite_bos_keys": set(),
+                    "stop_mode": "fvg_invalidation", "breakeven_price": None,
+                    "eod_exit_pending_day": None,
+                    "last_rth_1m_close": None,
+                    "last_rth_1m_close_ts": None,
+                    "realized_pnl": 0.0,
+                    "entry_ref_swing_high": pending.get("entry_ref_swing_high"),
+                    "entry_ref_swing_high_ts": pending.get("entry_ref_swing_high_ts"),
+                    "entry_ref_swing_high_score": pending.get("entry_ref_swing_high_score"),
+                    "entry_ref_swing_low": pending.get("entry_ref_swing_low"),
+                    "entry_ref_swing_low_ts": pending.get("entry_ref_swing_low_ts"),
+                    "entry_ref_swing_low_score": pending.get("entry_ref_swing_low_score"),
+                    "bos_score_total": pending.get("score_total", 0.0),
+                    "bos_score_threshold": cfg["score_min"],
+                    "bos_momentum_value": pending.get("mom_value", 0.0),
+                    "bos_volume_value": pending.get("vol_value", 0.0),
+                    "bos_close_strength_value": pending.get("close_strength_value", 0.0),
+                    "bos_break_distance_value": pending.get("break_distance_value", 0.0),
+                    "structure_state_tf": pending.get("structure_state_tf"),
+                    "structure_state_15m": pending.get("structure_state_15m"),
+                    "structure_state_1h": pending.get("structure_state_1h"),
+                    "highest_price_during_trade": high_px,
+                    "lowest_price_during_trade": low_px,
+                    "bars_held": 0,
+                    "notes": "",
+                }
 
     pos = state.get("open_position")
     if pos and high_px is not None and low_px is not None:
@@ -1023,8 +1060,8 @@ def evaluate_bos_fvg_ltf(
             )
             setup_rows = _bridge_setup_rows(state, pos.get("setup_id"))
             fill_leg = 1 if leg == "top" else 2
-            rows_to_manage = [r for r in setup_rows if r.get("leg") == fill_leg and r.get("status") == "nt-waiting"]
-            _bridge_update_rows(rows_to_manage, {"status": "nt-managing"}, "entry_fill")
+            rows_to_manage = [r for r in setup_rows if r.get("leg") == fill_leg and bool(r.get("db_active_seen"))]
+            _bridge_update_rows(rows_to_manage, {"note": "entry_fill_seen"}, "entry_fill")
             if not pos.get("first_fill_ts"):
                 pos["first_fill_ts"] = last_ts
                 pos["first_fill_ts_et"] = last_ts_et
@@ -1147,8 +1184,8 @@ def evaluate_bos_fvg_ltf(
         if pending_now and pending_now.get("trade_id") == p.get("trade_id"):
             state["pending_setup"] = None
         setup_rows = _bridge_setup_rows(state, p.get("setup_id"))
-        managing_rows = [r for r in setup_rows if r.get("status") == "nt-managing"]
-        _bridge_update_rows(managing_rows, {"status": "nt-closed"}, "sim_close_sync")
+        managing_rows = [r for r in setup_rows if r.get("db_active_status") == "nt-managing"]
+        _bridge_update_rows(managing_rows, {"manage": "C"}, "sim_close_sync")
         state["completed_trades"].append(trade)
         state["open_position"] = None
         status = "exited"
@@ -1274,8 +1311,8 @@ def evaluate_bos_fvg_ltf(
 
     bridge_setup_id = state.get("bridge_current_setup_id")
     bridge_rows = _bridge_setup_rows(state, bridge_setup_id)
-    managing_trade1 = [r for r in bridge_rows if r.get("status") == "nt-managing" and r.get("trade") == 1]
-    managing_trade2 = [r for r in bridge_rows if r.get("status") == "nt-managing" and r.get("trade") == 2]
+    managing_trade1 = [r for r in bridge_rows if r.get("db_active_status") == "nt-managing" and r.get("trade") == 1]
+    managing_trade2 = [r for r in bridge_rows if r.get("db_active_status") == "nt-managing" and r.get("trade") == 2]
     swing_reason = None
     swing_ts = None
     swing_level = None
@@ -1303,6 +1340,12 @@ def evaluate_bos_fvg_ltf(
         if state["bridge_last_swing_ts"].get(swing_key) != swing_ts:
             state["bridge_last_swing_ts"][swing_key] = swing_ts
             _bridge_update_rows(target_rows, {"sl_level": swing_level}, swing_reason)
+    if bridge_rows:
+        has_managing = any(r.get("db_active_status") == "nt-managing" for r in bridge_rows)
+        has_active = any(bool(r.get("db_active_seen")) for r in bridge_rows)
+        if has_active and not has_managing:
+            cancel_rows = [r for r in bridge_rows if r.get("db_active_status") == "nt-waiting"]
+            _bridge_update_rows(cancel_rows, {"manage": "C"}, "phase3_no_live_rows")
 
     if not cfg["enabled"]:
         status = "disabled"
