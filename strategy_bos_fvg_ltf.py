@@ -256,47 +256,48 @@ def _bridge_insert_rows(
     cp = "call" if side == "long" else "put"
     sl_cond = "cb" if side == "long" else "ca"
     sl_level = fvg_low if side == "long" else fvg_high
+    end_time_et = _end_time_et_for_day(bos_ts)
     leg1_entry = fvg_high if side == "long" else fvg_low
     leg2_entry = fvg_low if side == "long" else fvg_high
     rows: List[Dict[str, Any]] = []
     for leg, entry_level in ((1, leg1_entry), (2, leg2_entry)):
         for trade in (1, 2):
+            tags = [
+                f"strategy:{strategy_name}",
+                f"version:{version}",
+                f"id:{setup_id}",
+                f"tf:{timeframe}",
+                f"leg:{leg}",
+                f"trade:{trade}",
+            ]
             row = {
                 "setup_id": setup_id,
                 "symbol": symbol,
                 "asset_type": "option",
+                "cp": cp,
                 "qty": 1,
                 "entry_type": "equity",
                 "entry_cond": "at",
-                "entry_tf": timeframe,
                 "entry_level": entry_level,
+                "entry_tf": timeframe,
                 "sl_type": "equity",
                 "sl_cond": sl_cond,
-                "sl_tf": timeframe,
                 "sl_level": sl_level,
+                "sl_tf": timeframe,
                 "tp_type": None,
                 "tp_level": None,
-                "cp": cp,
                 "status": "nt-waiting",
                 "manage": None,
-                "end_time_et": _end_time_et_for_day(bos_ts),
+                "end_time_et": end_time_et,
                 "leg": leg,
                 "trade": trade,
-                "tags": [
-                    f"strategy:{strategy_name}",
-                    f"version:{version}",
-                    f"id:{setup_id}",
-                    f"tf:{timeframe}",
-                    f"leg:{leg}",
-                    f"trade:{trade}",
-                ],
+                "tags": tags,
             }
             rows.append(row)
+            _bridge_trade_log("INSERT", row, "stage1_create")
     state["bridge_rows"].extend(rows)
-    state["bridge_setup_index"][setup_id] = len(rows)
+    state["bridge_setup_index"][setup_id] = {"rows": rows, "side": side}
     state["bridge_current_setup_id"] = setup_id
-    for row in rows:
-        _bridge_trade_log("INSERT", row, "stage1_create")
     return setup_id
 
 
