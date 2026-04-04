@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -181,8 +182,131 @@ def _ensure_state(symbol: str, timeframe: str) -> Dict[str, Any]:
             "signals": [],
             "latest_snapshot": None,
             "final_logs_emitted": False,
+            "bridge_rows": [],
+            "bridge_setup_index": {},
+            "bridge_current_setup_id": None,
+            "bridge_last_swing_ts": {},
         }
     return _BOS_FVG_LTF_STATE[key]
+
+
+def _deterministic_setup_id(
+    symbol: str,
+    timeframe: str,
+    bos_ts: Any,
+    version: str,
+    side: str,
+    fvg_high: Optional[float],
+    fvg_low: Optional[float],
+) -> str:
+    bos_ts_s = str(bos_ts or "")
+    stable = "|".join([
+        symbol,
+        timeframe,
+        bos_ts_s,
+        version,
+        str(side or ""),
+        f"{_safe_float(fvg_high, 0.0):.8f}",
+        f"{_safe_float(fvg_low, 0.0):.8f}",
+    ])
+    h = hashlib.sha1(stable.encode("utf-8")).hexdigest()[:10]
+    return f"{symbol}_{timeframe}_{bos_ts_s}_{version}_{h}"
+
+
+def _bridge_trade_log(action: str, row: Dict[str, Any], reason: str) -> None:
+    tags = row.get("tags") or []
+    setup_id = row.get("setup_id")
+    if not setup_id:
+        for tag in tags:
+            if isinstance(tag, str) and tag.startswith("id:"):
+                setup_id = tag.split(":", 1)[1]
+                break
+    print(
+        f"[BOS_FVG_V1][TRADE_LOG] ACTION={action} | Symbol={row.get('symbol')} | TF={row.get('entry_tf')} | "
+        f"ID={setup_id} | Leg={row.get('leg')} | Trade={row.get('trade')} | Entry={row.get('entry_level')} | "
+        f"SL={row.get('sl_level')} | Status={row.get('status')} | Manage={row.get('manage')} | Reason={reason}"
+    )
+
+
+def _bridge_insert_rows(
+    state: Dict[str, Any],
+    symbol: str,
+    timeframe: str,
+    side: str,
+    version: str,
+    strategy_name: str,
+    bos_ts: Any,
+    fvg_high: Optional[float],
+    fvg_low: Optional[float],
+) -> Optional[str]:
+    setup_id = _deterministic_setup_id(symbol, timeframe, bos_ts, version, side, fvg_high, fvg_low)
+    if setup_id in state["bridge_setup_index"]:
+        return None
+    cp = "call" if side == "long" else "put"
+    sl_cond = "cb" if side == "long" else "ca"
+    sl_level = fvg_low if side == "long" else fvg_high
+    leg1_entry = fvg_high if side == "long" else fvg_low
+    leg2_entry = fvg_low if side == "long" else fvg_high
+    rows: List[Dict[str, Any]] = []
+    for leg, entry_level in ((1, leg1_entry), (2, leg2_entry)):
+        for trade in (1, 2):
+            row = {
+                "setup_id": setup_id,
+                "symbol": symbol,
+                "asset_type": "option",
+                "qty": 1,
+                "entry_type": "equity",
+                "entry_cond": "at",
+                "entry_tf": timeframe,
+                "entry_level": entry_level,
+                "sl_type": "equity",
+                "sl_cond": sl_cond,
+                "sl_tf": timeframe,
+                "sl_level": sl_level,
+                "tp_type": None,
+                "tp_level": None,
+                "cp": cp,
+                "status": "nt-waiting",
+                "manage": None,
+                "end_time_et": "3:58 PM ET",
+                "leg": leg,
+                "trade": trade,
+                "tags": [
+                    f"strategy:{strategy_name}",
+                    f"version:{version}",
+                    f"id:{setup_id}",
+                    f"tf:{timeframe}",
+                    f"leg:{leg}",
+                    f"trade:{trade}",
+                ],
+            }
+            rows.append(row)
+    state["bridge_rows"].extend(rows)
+    state["bridge_setup_index"][setup_id] = len(rows)
+    state["bridge_current_setup_id"] = setup_id
+    for row in rows:
+        _bridge_trade_log("INSERT", row, "stage1_create")
+    return setup_id
+
+
+def _bridge_setup_rows(state: Dict[str, Any], setup_id: Optional[str]) -> List[Dict[str, Any]]:
+    if not setup_id:
+        return []
+    return [r for r in state["bridge_rows"] if r.get("setup_id") == setup_id]
+
+
+def _bridge_update_rows(rows: List[Dict[str, Any]], updates: Dict[str, Any], reason: str) -> int:
+    changed = 0
+    for row in rows:
+        row_changed = False
+        for key, value in updates.items():
+            if row.get(key) != value:
+                row[key] = value
+                row_changed = True
+        if row_changed:
+            changed += 1
+            _bridge_trade_log("UPDATE", row, reason)
+    return changed
 
 
 def _log_value(value: Any) -> str:
@@ -311,6 +435,13 @@ def print_bos_fvg_final_summaries() -> None:
             print(_build_final_trade_log(t, symbol, timeframe))
         print(_build_final_summary_log(symbol, timeframe, trades))
         state["final_logs_emitted"] = True
+
+
+def get_live_bridge_rows() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for state in _BOS_FVG_LTF_STATE.values():
+        rows.extend(deepcopy(state.get("bridge_rows") or []))
+    return rows
 
 
 def _normalize_fvg_direction(v: Any) -> str:
@@ -632,14 +763,14 @@ def evaluate_bos_fvg_ltf(
     # Setup state management: only before first fill/open position
     if not state["open_position"] and cfg["enabled"] and chosen_bos_detected and chosen_score_pass and cfg["max_open_positions"] >= 1:
         pending = state["pending_setup"]
-        if pending and pending.get("side") != chosen_side:
-            print(f"[BOS_FVG_V1] pending setup canceled opposite BOS | Symbol={symbol} | TF={timeframe} | OldSide={pending.get('side')} | NewSide={chosen_side}")
+        pending_setup_id = (pending or {}).get("setup_id") or state.get("bridge_current_setup_id")
+        pending_rows = _bridge_setup_rows(state, pending_setup_id)
+        has_live_rows = any(r.get("status") == "nt-managing" for r in pending_rows)
+        if pending and not has_live_rows:
+            waiting_rows = [r for r in pending_rows if r.get("status") == "nt-waiting"]
+            _bridge_update_rows(waiting_rows, {"manage": "C"}, "new_bos_cancel")
             state["pending_setup"] = None
-        else:
-            if pending and pending.get("side") == chosen_side:
-                if DEBUG_LOGS:
-                    print(f"[BOS_FVG_V1] pending setup replaced newer same-side BOS | Symbol={symbol} | TF={timeframe} | Side={chosen_side}")
-
+        if not pending or not has_live_rows:
             state["trade_id_counter"] += 1
             trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
             top_shares = ENTRY_LEG_SHARES
@@ -673,6 +804,7 @@ def evaluate_bos_fvg_ltf(
                 "structure_state_15m": structure_state_15m,
                 "structure_state_1h": structure_state_1h,
                 "fvg": None,
+                "setup_id": None,
                 "notes": "awaiting_first_same_direction_fvg_after_bos",
             }
             if DEBUG_LOGS:
@@ -707,6 +839,26 @@ def evaluate_bos_fvg_ltf(
                 f"FVGScore={fvg_score} | TradeScore={trade_score} | FVGScoreSrc={fvg_score_src} | TradeScoreSrc={trade_score_src} | "
                 f"FVG={json.dumps(fvg, default=str, sort_keys=True)}"
             )
+            setup_id = _bridge_insert_rows(
+                state=state,
+                symbol=symbol,
+                timeframe=timeframe,
+                side=pending.get("side"),
+                version="BOS_FVG_V1",
+                strategy_name="bos_fvg_ltf",
+                bos_ts=pending.get("bos_ts"),
+                fvg_high=_safe_float(fvg.get("high")),
+                fvg_low=_safe_float(fvg.get("low")),
+            )
+            pending["setup_id"] = setup_id or _deterministic_setup_id(
+                symbol,
+                timeframe,
+                pending.get("bos_ts"),
+                "BOS_FVG_V1",
+                pending.get("side"),
+                _safe_float(fvg.get("high")),
+                _safe_float(fvg.get("low")),
+            )
     elif pending and pending.get("fvg"):
         pending["fvg"], _ = _refresh_selected_fvg_fields(pending.get("fvg"), fvg_source or [])
 
@@ -719,6 +871,7 @@ def evaluate_bos_fvg_ltf(
             fvg_low = _safe_float(f.get("low"))
             state["open_position"] = {
                 "trade_id": pending.get("trade_id"), "side": pending.get("side"),
+                "setup_id": pending.get("setup_id"),
                 "bos_ts": pending.get("bos_ts"), "bos_ts_et": pending.get("bos_ts_et"),
                 "fvg_ts": f.get("created_ts"), "fvg_high": fvg_high, "fvg_low": fvg_low,
                 "fvg_filled": bool(f.get("filled", False)),
@@ -855,6 +1008,10 @@ def evaluate_bos_fvg_ltf(
                 f"[BOS_FVG_V1] entry filled | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
                 f"Side={side} | Leg={leg} | FillPrice={px} | Shares={shares} | AvgEntry={new_avg} | OpenShares={new_total}"
             )
+            setup_rows = _bridge_setup_rows(state, pos.get("setup_id"))
+            fill_leg = 1 if leg == "top" else 2
+            rows_to_manage = [r for r in setup_rows if r.get("leg") == fill_leg and r.get("status") == "nt-waiting"]
+            _bridge_update_rows(rows_to_manage, {"status": "nt-managing"}, "entry_fill")
             if not pos.get("first_fill_ts"):
                 pos["first_fill_ts"] = last_ts
                 pos["first_fill_ts_et"] = last_ts_et
@@ -976,6 +1133,9 @@ def evaluate_bos_fvg_ltf(
         pending_now = state.get("pending_setup")
         if pending_now and pending_now.get("trade_id") == p.get("trade_id"):
             state["pending_setup"] = None
+        setup_rows = _bridge_setup_rows(state, p.get("setup_id"))
+        managing_rows = [r for r in setup_rows if r.get("status") == "nt-managing"]
+        _bridge_update_rows(managing_rows, {"status": "nt-closed"}, "sim_close_sync")
         state["completed_trades"].append(trade)
         state["open_position"] = None
         status = "exited"
@@ -1099,6 +1259,38 @@ def evaluate_bos_fvg_ltf(
                     f"TradeID={pos.get('trade_id')} | ExitReason=EOD | ExitSource=last_1m_close"
                 )
 
+    bridge_setup_id = state.get("bridge_current_setup_id")
+    bridge_rows = _bridge_setup_rows(state, bridge_setup_id)
+    managing_trade1 = [r for r in bridge_rows if r.get("status") == "nt-managing" and r.get("trade") == 1]
+    managing_trade2 = [r for r in bridge_rows if r.get("status") == "nt-managing" and r.get("trade") == 2]
+    swing_reason = None
+    swing_ts = None
+    swing_level = None
+    target_rows: List[Dict[str, Any]] = []
+    if managing_trade1:
+        if bridge_rows and bridge_rows[0].get("cp") == "call":
+            swing_ts = recent_low_ts
+            swing_level = recent_low_price
+        else:
+            swing_ts = recent_high_ts
+            swing_level = recent_high_price
+        swing_reason = "swing_update_trade1"
+        target_rows = managing_trade1
+    elif managing_trade2:
+        if bridge_rows and bridge_rows[0].get("cp") == "call":
+            swing_ts = recent_low_ts
+            swing_level = recent_low_price
+        else:
+            swing_ts = recent_high_ts
+            swing_level = recent_high_price
+        swing_reason = "swing_update_trade2"
+        target_rows = managing_trade2
+    if target_rows and swing_ts and swing_level is not None:
+        swing_key = f"{bridge_setup_id}:{swing_reason}"
+        if state["bridge_last_swing_ts"].get(swing_key) != swing_ts:
+            state["bridge_last_swing_ts"][swing_key] = swing_ts
+            _bridge_update_rows(target_rows, {"sl_level": swing_level}, swing_reason)
+
     if not cfg["enabled"]:
         status = "disabled"
         skip_reason = "bos_score_disabled"
@@ -1156,6 +1348,7 @@ def evaluate_bos_fvg_ltf(
         "trade_summary": summary,
         "trade_list": summary["trade_list"],
         "open_position_summary": deepcopy(state["open_position"]),
+        "live_trade_rows": deepcopy(state["bridge_rows"]),
     }
     state["latest_snapshot"] = snapshot
     return snapshot
