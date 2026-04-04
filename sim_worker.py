@@ -16,7 +16,10 @@ from candle_engine import CandleEngine
 from indicator_bot import IndicatorBot
 from liquidity_pool_builder import print_last_liquidity_output
 from strategy_bos_fvg import print_bos_fvg_final_summaries as print_bos_fvg_htf_final_summaries
-from strategy_bos_fvg_ltf import print_bos_fvg_final_summaries as print_bos_fvg_ltf_final_summaries
+from strategy_bos_fvg_ltf import (
+    print_bos_fvg_final_summaries as print_bos_fvg_ltf_final_summaries,
+    get_live_bridge_rows as get_bos_fvg_ltf_live_bridge_rows,
+)
 import spot_event as spot_event_module
 
 
@@ -181,6 +184,75 @@ async def _sb_insert(
     r = await client.post(endpoint, headers=hdrs, json=payload, timeout=30.0)
     r.raise_for_status()
     return r.json() if r.text else None
+
+
+def _bridge_row_to_db_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    payload = {
+        "setup_id": row.get("setup_id"),
+        "symbol": row.get("symbol"),
+        "asset_type": row.get("asset_type"),
+        "qty": row.get("qty"),
+        "entry_type": row.get("entry_type"),
+        "entry_cond": row.get("entry_cond"),
+        "entry_tf": row.get("entry_tf"),
+        "entry_level": row.get("entry_level"),
+        "sl_type": row.get("sl_type"),
+        "sl_cond": row.get("sl_cond"),
+        "sl_tf": row.get("sl_tf"),
+        "sl_level": row.get("sl_level"),
+        "tp_type": row.get("tp_type"),
+        "tp_level": row.get("tp_level"),
+        "cp": row.get("cp"),
+        "status": row.get("status"),
+        "manage": row.get("manage"),
+        "end_time_et": row.get("end_time_et"),
+        "leg": row.get("leg"),
+        "trade": row.get("trade"),
+        "tags": row.get("tags"),
+    }
+    return {k: v for k, v in payload.items() if v is not None}
+
+
+async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> None:
+    rows = get_bos_fvg_ltf_live_bridge_rows()
+    if not rows:
+        return
+    base_url, key = _sb_env()
+    for row in rows:
+        setup_id = str(row.get("setup_id") or "").strip()
+        leg = row.get("leg")
+        trade = row.get("trade")
+        if not setup_id or leg is None or trade is None:
+            continue
+        params = {
+            "setup_id": f"eq.{setup_id}",
+            "leg": f"eq.{leg}",
+            "trade": f"eq.{trade}",
+        }
+        payload = _bridge_row_to_db_payload(row)
+
+        # Stage 1 creation sink
+        existing_new = await _sb_get_one(client, base_url, key, "new_trades", params=params, select="setup_id")
+        if not existing_new:
+            await _sb_insert(client, base_url, key, "new_trades", payload=payload, returning="minimal")
+
+        # Active trade management sink (status/manage/sl updates)
+        existing_active = await _sb_get_one(client, base_url, key, "active_trades", params=params, select="setup_id")
+        if existing_active:
+            await _sb_patch(
+                client,
+                base_url,
+                key,
+                "active_trades",
+                params=params,
+                payload={
+                    "status": row.get("status"),
+                    "manage": row.get("manage"),
+                    "sl_level": row.get("sl_level"),
+                    "end_time_et": row.get("end_time_et"),
+                },
+                returning="minimal",
+            )
 
 
 async def _sb_upload_storage_file(
@@ -850,6 +922,10 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
         sim_start_ts = _to_iso_utc((first_live_to_bot or {}).get("ts"))
         sim_end_ts = _to_iso_utc((last_live_to_bot or {}).get("ts"))
         end_time = dt.datetime.now(dt.timezone.utc).isoformat()
+        try:
+            await _sync_bos_fvg_bridge_rows_to_supabase(client)
+        except Exception as bridge_err:
+            logger.warning("failed to sync BOS_FVG bridge rows to Supabase: %s", bridge_err)
         await _update_simulation_run(
             client,
             run_id,
