@@ -302,7 +302,11 @@ def _bridge_insert_rows(
             rows.append(row)
             _bridge_trade_log("INSERT", row, "stage1_create")
     state["bridge_rows"].extend(rows)
-    state["bridge_setup_index"][setup_id] = {"rows": rows, "side": side}
+    state["bridge_setup_index"][setup_id] = {
+        "rows": rows,
+        "side": side,
+        "bridge_live_phase_entered": False,
+    }
     state["bridge_current_setup_id"] = setup_id
     return setup_id
 
@@ -1366,8 +1370,11 @@ def evaluate_bos_fvg_ltf(
 
     bridge_setup_id = state.get("bridge_current_setup_id")
     bridge_rows = _bridge_setup_rows(state, bridge_setup_id)
+    bridge_setup_meta = (state.get("bridge_setup_index") or {}).get(bridge_setup_id) or {}
     managing_trade1 = [r for r in bridge_rows if r.get("db_active_status") == "nt-managing" and r.get("trade") == 1]
     managing_trade2 = [r for r in bridge_rows if r.get("db_active_status") == "nt-managing" and r.get("trade") == 2]
+    if managing_trade1 or managing_trade2:
+        bridge_setup_meta["bridge_live_phase_entered"] = True
     swing_reason = None
     swing_ts = None
     swing_level = None
@@ -1398,9 +1405,12 @@ def evaluate_bos_fvg_ltf(
     if bridge_rows:
         has_managing = any(r.get("db_active_status") == "nt-managing" for r in bridge_rows)
         has_active = any(bool(r.get("db_active_seen")) for r in bridge_rows)
-        if has_active and not has_managing:
+        live_phase_entered = bool(bridge_setup_meta.get("bridge_live_phase_entered"))
+        if live_phase_entered and has_active and not has_managing:
             cancel_rows = [r for r in bridge_rows if r.get("db_active_status") == "nt-waiting"]
-            _bridge_update_rows(cancel_rows, {"manage": "C"}, "phase3_no_live_rows")
+            changed = _bridge_update_rows(cancel_rows, {"manage": "C"}, "phase3_no_live_rows")
+            if changed:
+                bridge_setup_meta["bridge_live_phase_entered"] = False
 
     if not cfg["enabled"]:
         status = "disabled"
