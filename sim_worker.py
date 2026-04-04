@@ -30,6 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sim_worker")
 logger.disabled = True  # Logs disabled; keep strategy logs only
+_BRIDGE_NEW_INSERTED_KEYS: set[str] = set()
 # Silence per-request HTTP client logs such as:
 # "HTTP Request: POST ... \"HTTP/1.1 200 OK\""
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -264,7 +265,6 @@ def _sanitize_bridge_active_trades_payload(payload: Dict[str, Any]) -> Dict[str,
     allowed = {
         "symbol",
         "asset_type",
-        "status",
         "qty",
         "cp",
         "entry_type",
@@ -311,12 +311,16 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
         active_params = _bridge_match_params_active_trades(row)
         new_payload = _sanitize_bridge_new_trades_payload(row)
 
-        # new_trades is append-only: always insert, no lookup, no update
-        try:
-            await _sb_insert(client, base_url, key, "new_trades", payload=new_payload, returning="minimal")
-        except httpx.HTTPStatusError as e:
-            body = (e.response.text if e.response is not None else str(e))[:240]
-            print(f"[BOS_FVG_BRIDGE][WARN] table=new_trades id={setup_id} leg={leg} trade={trade} err={body}")
+        row_key = f"{setup_id}:{leg}:{trade}"
+        # new_trades is append-only: insert each bridge row once per worker process
+        if row_key not in _BRIDGE_NEW_INSERTED_KEYS:
+            try:
+                await _sb_insert(client, base_url, key, "new_trades", payload=new_payload, returning="minimal")
+                _BRIDGE_NEW_INSERTED_KEYS.add(row_key)
+                print(f"[BOS_FVG_BRIDGE][DB_APPLIED] action=insert table=new_trades id={setup_id} leg={leg} trade={trade}")
+            except httpx.HTTPStatusError as e:
+                body = (e.response.text if e.response is not None else str(e))[:240]
+                print(f"[BOS_FVG_BRIDGE][WARN] table=new_trades id={setup_id} leg={leg} trade={trade} err={body}")
 
         # active_trades is stateful: patch only existing rows, never insert
         try:
@@ -330,7 +334,6 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
                     params=active_params,
                     payload=_sanitize_bridge_active_trades_payload(
                         {
-                            "status": row.get("status"),
                             "manage": row.get("manage"),
                             "sl_level": row.get("sl_level"),
                             "end_time_et": row.get("end_time_et"),
@@ -339,6 +342,7 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
                     ),
                     returning="minimal",
                 )
+                print(f"[BOS_FVG_BRIDGE][DB_APPLIED] action=patch table=active_trades id={setup_id} leg={leg} trade={trade}")
         except httpx.HTTPStatusError as e:
             body = (e.response.text if e.response is not None else str(e))[:240]
             print(f"[BOS_FVG_BRIDGE][WARN] table=active_trades id={setup_id} leg={leg} trade={trade} err={body}")
