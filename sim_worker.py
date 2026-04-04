@@ -319,7 +319,6 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
             "tags": f"cs.{{\"id:{setup_id}\",\"leg:{leg}\",\"trade:{trade}\"}}",
         }
         new_payload = _sanitize_bridge_new_trades_payload(row)
-        new_payload["id"] = row_id
         db_new_insert_confirmed = False
         db_active_seen = False
         db_active_status = None
