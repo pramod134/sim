@@ -11,6 +11,7 @@ _BOS_FVG_LTF_STATE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _ET = ZoneInfo("America/New_York")
 DEBUG_LOGS = str(os.getenv("BOS_FVG_DEBUG_LOGS", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 ENTRY_LEG_SHARES = 100
+BRIDGE_VERSION = (os.getenv("BOS_FVG_LTF_VERSION") or "v1").strip() or "v1"
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -96,6 +97,16 @@ def _as_et_str(ts_value: Any) -> Optional[str]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo("UTC"))
     return dt.astimezone(_ET).isoformat()
+
+
+def _end_time_et_for_day(ts_value: Any) -> Optional[str]:
+    dt = _parse_ts(ts_value)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    et = dt.astimezone(_ET)
+    return et.replace(hour=15, minute=58, second=0, microsecond=0, tzinfo=None).isoformat(sep=" ")
 
 
 def _build_candle_index(candles: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -268,7 +279,7 @@ def _bridge_insert_rows(
                 "cp": cp,
                 "status": "nt-waiting",
                 "manage": None,
-                "end_time_et": "3:58 PM ET",
+                "end_time_et": _end_time_et_for_day(bos_ts),
                 "leg": leg,
                 "trade": trade,
                 "tags": [
@@ -844,7 +855,7 @@ def evaluate_bos_fvg_ltf(
                 symbol=symbol,
                 timeframe=timeframe,
                 side=pending.get("side"),
-                version="BOS_FVG_V1",
+                version=BRIDGE_VERSION,
                 strategy_name="bos_fvg_ltf",
                 bos_ts=pending.get("bos_ts"),
                 fvg_high=_safe_float(fvg.get("high")),
@@ -854,7 +865,7 @@ def evaluate_bos_fvg_ltf(
                 symbol,
                 timeframe,
                 pending.get("bos_ts"),
-                "BOS_FVG_V1",
+                BRIDGE_VERSION,
                 pending.get("side"),
                 _safe_float(fvg.get("high")),
                 _safe_float(fvg.get("low")),
