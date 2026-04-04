@@ -186,31 +186,97 @@ async def _sb_insert(
     return r.json() if r.text else None
 
 
-def _bridge_row_to_db_payload(row: Dict[str, Any]) -> Dict[str, Any]:
-    payload = {
-        "setup_id": row.get("setup_id"),
-        "symbol": row.get("symbol"),
-        "asset_type": row.get("asset_type"),
-        "qty": row.get("qty"),
-        "entry_type": row.get("entry_type"),
-        "entry_cond": row.get("entry_cond"),
-        "entry_tf": row.get("entry_tf"),
-        "entry_level": row.get("entry_level"),
-        "sl_type": row.get("sl_type"),
-        "sl_cond": row.get("sl_cond"),
-        "sl_tf": row.get("sl_tf"),
-        "sl_level": row.get("sl_level"),
-        "tp_type": row.get("tp_type"),
-        "tp_level": row.get("tp_level"),
-        "cp": row.get("cp"),
-        "status": row.get("status"),
-        "manage": row.get("manage"),
-        "end_time_et": row.get("end_time_et"),
-        "leg": row.get("leg"),
-        "trade": row.get("trade"),
-        "tags": row.get("tags"),
+def _tag_value(tags: Any, prefix: str) -> Optional[str]:
+    if not isinstance(tags, list):
+        return None
+    want = f"{prefix}:"
+    for tag in tags:
+        if isinstance(tag, str) and tag.startswith(want):
+            return tag.split(":", 1)[1].strip() or None
+    return None
+
+
+def _bridge_match_params(row: Dict[str, Any]) -> Dict[str, str]:
+    tags = row.get("tags") if isinstance(row.get("tags"), list) else []
+    setup_id = _tag_value(tags, "id") or str(row.get("setup_id") or "").strip()
+    leg = _tag_value(tags, "leg") or str(row.get("leg") or "").strip()
+    trade = _tag_value(tags, "trade") or str(row.get("trade") or "").strip()
+    return {
+        "select": "id,tags,status",
+        "tags": f"cs.{{\"id:{setup_id}\",\"leg:{leg}\",\"trade:{trade}\"}}",
     }
-    return {k: v for k, v in payload.items() if v is not None}
+
+
+def _sanitize_bridge_new_trades_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {
+        "symbol",
+        "asset_type",
+        "cp",
+        "qty",
+        "entry_type",
+        "entry_cond",
+        "entry_level",
+        "entry_tf",
+        "sl_type",
+        "sl_cond",
+        "sl_level",
+        "sl_tf",
+        "tp_type",
+        "tp_level",
+        "note",
+        "tags",
+        "trade_type",
+        "end_time",
+        "entry_time",
+    }
+    setup_id = str(payload.get("setup_id") or "").strip()
+    out: Dict[str, Any] = {}
+    if payload.get("end_time_et") is not None:
+        out["end_time"] = payload.get("end_time_et")
+    out["note"] = f"bridge:{setup_id}" if setup_id else "bridge:"
+    out["trade_type"] = "swing"
+    for k in allowed:
+        if k in out:
+            continue
+        if payload.get(k) is not None:
+            out[k] = payload.get(k)
+    return out
+
+
+def _sanitize_bridge_active_trades_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {
+        "symbol",
+        "asset_type",
+        "status",
+        "qty",
+        "cp",
+        "entry_type",
+        "entry_cond",
+        "entry_level",
+        "entry_tf",
+        "sl_type",
+        "sl_cond",
+        "sl_level",
+        "sl_tf",
+        "tp_type",
+        "tp_level",
+        "manage",
+        "note",
+        "tags",
+        "trade_type",
+        "end_time_et",
+    }
+    setup_id = str(payload.get("setup_id") or "").strip()
+    out: Dict[str, Any] = {
+        "note": f"bridge:{setup_id}" if setup_id else "bridge:",
+        "trade_type": "swing",
+    }
+    for k in allowed:
+        if k in out:
+            continue
+        if payload.get(k) is not None:
+            out[k] = payload.get(k)
+    return out
 
 
 async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> None:
@@ -220,39 +286,50 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
     base_url, key = _sb_env()
     for row in rows:
         setup_id = str(row.get("setup_id") or "").strip()
-        leg = row.get("leg")
-        trade = row.get("trade")
+        tags = row.get("tags") if isinstance(row.get("tags"), list) else []
+        leg = _tag_value(tags, "leg") or row.get("leg")
+        trade = _tag_value(tags, "trade") or row.get("trade")
         if not setup_id or leg is None or trade is None:
             continue
-        params = {
-            "setup_id": f"eq.{setup_id}",
-            "leg": f"eq.{leg}",
-            "trade": f"eq.{trade}",
-        }
-        payload = _bridge_row_to_db_payload(row)
+        params = _bridge_match_params(row)
+        new_payload = _sanitize_bridge_new_trades_payload(row)
+        active_payload = _sanitize_bridge_active_trades_payload(row)
 
         # Stage 1 creation sink
-        existing_new = await _sb_get_one(client, base_url, key, "new_trades", params=params, select="setup_id")
-        if not existing_new:
-            await _sb_insert(client, base_url, key, "new_trades", payload=payload, returning="minimal")
+        try:
+            existing_new = await _sb_select_one(client, base_url, key, "new_trades", params=params)
+            if not existing_new:
+                await _sb_insert(client, base_url, key, "new_trades", payload=new_payload, returning="minimal")
+        except httpx.HTTPStatusError as e:
+            body = (e.response.text if e.response is not None else str(e))[:240]
+            print(f"[BOS_FVG_BRIDGE][WARN] table=new_trades id={setup_id} leg={leg} trade={trade} err={body}")
 
         # Active trade management sink (status/manage/sl updates)
-        existing_active = await _sb_get_one(client, base_url, key, "active_trades", params=params, select="setup_id")
-        if existing_active:
-            await _sb_patch(
-                client,
-                base_url,
-                key,
-                "active_trades",
-                params=params,
-                payload={
-                    "status": row.get("status"),
-                    "manage": row.get("manage"),
-                    "sl_level": row.get("sl_level"),
-                    "end_time_et": row.get("end_time_et"),
-                },
-                returning="minimal",
-            )
+        try:
+            existing_active = await _sb_select_one(client, base_url, key, "active_trades", params=params)
+            if existing_active:
+                await _sb_patch(
+                    client,
+                    base_url,
+                    key,
+                    "active_trades",
+                    params=params,
+                    payload=_sanitize_bridge_active_trades_payload(
+                        {
+                            "status": row.get("status"),
+                            "manage": row.get("manage"),
+                            "sl_level": row.get("sl_level"),
+                            "end_time_et": row.get("end_time_et"),
+                            "setup_id": setup_id,
+                        }
+                    ),
+                    returning="minimal",
+                )
+            else:
+                await _sb_insert(client, base_url, key, "active_trades", payload=active_payload, returning="minimal")
+        except httpx.HTTPStatusError as e:
+            body = (e.response.text if e.response is not None else str(e))[:240]
+            print(f"[BOS_FVG_BRIDGE][WARN] table=active_trades id={setup_id} leg={leg} trade={trade} err={body}")
 
 
 async def _sb_upload_storage_file(
@@ -864,6 +941,10 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
                     }
 
                     await bot.on_candle(symbol=symbol, timeframe=tf, candle=candle)
+                    try:
+                        await _sync_bos_fvg_bridge_rows_to_supabase(client)
+                    except Exception as bridge_err:
+                        logger.warning("bridge sync failed during live loop: %s", bridge_err)
                     emitted_events += 1
 
             # print("[SIM][LIVE] Live sim candle range (UTC):")
