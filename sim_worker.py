@@ -5,6 +5,7 @@ import uuid
 import logging
 import io
 import sys
+import json
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
@@ -322,6 +323,7 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
         db_new_insert_confirmed = False
         db_active_seen = False
         db_active_status = None
+        db_active_manage = None
 
         try:
             active_rows = await _sb_select(client, base_url, key, "active_trades", params=active_params)
@@ -332,6 +334,11 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
         if active_rows:
             db_active_seen = True
             db_active_status = "nt-managing" if any(str(r.get("status") or "") == "nt-managing" for r in active_rows) else "nt-waiting"
+            for active_row in active_rows:
+                manage_val = active_row.get("manage")
+                if manage_val is not None:
+                    db_active_manage = manage_val
+                    break
 
         if row_id in _BRIDGE_NEW_INSERTED_KEYS:
             db_new_insert_confirmed = True
@@ -350,6 +357,10 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
                 _BRIDGE_NEW_INSERTED_KEYS.add(row_id)
             else:
                 try:
+                    print(
+                        f"[BOS_FVG_BRIDGE][DB_WRITE] action=insert table=new_trades "
+                        f"id={setup_id} leg={leg} trade={trade} payload={json.dumps(new_payload, default=str, sort_keys=True)}"
+                    )
                     await _sb_insert(client, base_url, key, "new_trades", payload=new_payload, returning="minimal")
                     _BRIDGE_NEW_INSERTED_KEYS.add(row_id)
                     db_new_insert_confirmed = True
@@ -360,19 +371,24 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
 
         if db_active_seen:
             try:
+                active_patch_payload = _sanitize_bridge_active_trades_payload(
+                    {
+                        "manage": row.get("manage"),
+                        "sl_level": row.get("sl_level"),
+                        "note": f"bridge:{setup_id}",
+                    }
+                )
+                print(
+                    f"[BOS_FVG_BRIDGE][DB_WRITE] action=patch table=active_trades "
+                    f"id={setup_id} leg={leg} trade={trade} payload={json.dumps(active_patch_payload, default=str, sort_keys=True)}"
+                )
                 await _sb_patch(
                     client,
                     base_url,
                     key,
                     "active_trades",
                     params=active_params,
-                    payload=_sanitize_bridge_active_trades_payload(
-                        {
-                            "manage": row.get("manage"),
-                            "sl_level": row.get("sl_level"),
-                            "note": f"bridge:{setup_id}",
-                        }
-                    ),
+                    payload=active_patch_payload,
                     returning="minimal",
                 )
                 print(f"[BOS_FVG_BRIDGE][DB_APPLIED] action=patch table=active_trades id={setup_id} leg={leg} trade={trade}")
@@ -387,6 +403,7 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
                 "db_new_insert_confirmed": db_new_insert_confirmed,
                 "db_active_seen": db_active_seen,
                 "db_active_status": db_active_status,
+                "db_active_manage": db_active_manage,
             }
         )
     apply_bos_fvg_ltf_live_bridge_db_state(db_state_updates)

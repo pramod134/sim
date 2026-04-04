@@ -185,6 +185,7 @@ def _ensure_state(symbol: str, timeframe: str) -> Dict[str, Any]:
             "cash": float(cfg["initial_capital"]),
             "open_position": None,
             "pending_setup": None,
+            "pending_rearm_setup": None,
             "pending_entry": None,
             "broken_swing_highs": set(),
             "broken_swing_lows": set(),
@@ -292,6 +293,7 @@ def _bridge_insert_rows(
                 "db_new_insert_confirmed": False,
                 "db_active_seen": False,
                 "db_active_status": None,
+                "db_active_manage": None,
                 "end_time_et": end_time_et,
                 "leg": leg,
                 "trade": trade,
@@ -482,6 +484,7 @@ def apply_live_bridge_db_state(updates: List[Dict[str, Any]]) -> None:
             row["db_new_insert_confirmed"] = bool(incoming.get("db_new_insert_confirmed", False))
             row["db_active_seen"] = bool(incoming.get("db_active_seen", False))
             row["db_active_status"] = incoming.get("db_active_status")
+            row["db_active_manage"] = incoming.get("db_active_manage")
 
 
 def _normalize_fvg_direction(v: Any) -> str:
@@ -803,31 +806,48 @@ def evaluate_bos_fvg_ltf(
     # Setup state management: only before first fill/open position
     if not state["open_position"] and cfg["enabled"] and chosen_bos_detected and chosen_score_pass and cfg["max_open_positions"] >= 1:
         pending = state["pending_setup"]
-        pending_setup_id = (pending or {}).get("setup_id") or state.get("bridge_current_setup_id")
-        pending_rows = _bridge_setup_rows(state, pending_setup_id)
-        has_live_rows = any(r.get("db_active_status") == "nt-managing" for r in pending_rows)
-        has_active_rows = any(bool(r.get("db_active_seen")) for r in pending_rows)
-        all_waiting_rows = bool(pending_rows) and has_active_rows and all(
-            r.get("db_active_status") == "nt-waiting" for r in pending_rows if r.get("db_active_seen")
-        )
-        if pending and all_waiting_rows and not has_live_rows:
-            waiting_rows = [r for r in pending_rows if r.get("db_active_seen") and r.get("db_active_status") == "nt-waiting"]
-            _bridge_update_rows(waiting_rows, {"manage": "C"}, "new_bos_cancel")
-            state["pending_setup"] = None
-        if not pending or not has_live_rows:
-            state["trade_id_counter"] += 1
-            trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
-            top_shares = ENTRY_LEG_SHARES
-            bottom_shares = ENTRY_LEG_SHARES
-            total_shares = top_shares + bottom_shares
-            state["pending_setup"] = {
-                "trade_id": trade_id,
+        if pending:
+            pending_setup_id = (pending or {}).get("setup_id") or state.get("bridge_current_setup_id")
+            pending_rows = _bridge_setup_rows(state, pending_setup_id)
+            has_live_rows = any(r.get("db_active_status") == "nt-managing" for r in pending_rows)
+            if not has_live_rows:
+                state["pending_rearm_setup"] = {
+                    "side": chosen_side,
+                    "bos_ts": last_ts,
+                    "bos_ts_et": last_ts_et,
+                    "entry_ref_swing_high": recent_high_price,
+                    "entry_ref_swing_high_ts": recent_high_ts,
+                    "entry_ref_swing_high_score": recent_high_pivot_score,
+                    "entry_ref_swing_low": recent_low_price,
+                    "entry_ref_swing_low_ts": recent_low_ts,
+                    "entry_ref_swing_low_score": recent_low_pivot_score,
+                    "score_total": chosen_score_total,
+                    "score_pass": chosen_score_pass,
+                    "momentum_pass": chosen_momentum_pass,
+                    "volume_pass": chosen_volume_pass,
+                    "close_pass": chosen_close_pass,
+                    "break_pass": chosen_break_pass,
+                    "mom_value": mom_val,
+                    "vol_value": vol_val,
+                    "close_strength_value": chosen_close_strength,
+                    "break_distance_value": chosen_break_distance,
+                    "structure_state_tf": structure_state_tf,
+                    "structure_state_15m": structure_state_15m,
+                    "structure_state_1h": structure_state_1h,
+                }
+                waiting_rows = [r for r in pending_rows if r.get("db_active_seen") and r.get("db_active_status") == "nt-waiting"]
+                if waiting_rows:
+                    _bridge_update_rows(waiting_rows, {"manage": "C"}, "phase2_case2_cancel")
+                cancel_confirmed = bool(waiting_rows) and all(str(r.get("db_active_manage") or "") == "C" for r in waiting_rows)
+                if cancel_confirmed:
+                    state["pending_setup"] = None
+
+        if not state.get("pending_setup"):
+            rearm = state.get("pending_rearm_setup")
+            candidate = rearm or {
                 "side": chosen_side,
                 "bos_ts": last_ts,
                 "bos_ts_et": last_ts_et,
-                "shares_total": total_shares,
-                "entry_top_shares": top_shares,
-                "entry_bottom_shares": bottom_shares,
                 "entry_ref_swing_high": recent_high_price,
                 "entry_ref_swing_high_ts": recent_high_ts,
                 "entry_ref_swing_high_score": recent_high_pivot_score,
@@ -847,14 +867,49 @@ def evaluate_bos_fvg_ltf(
                 "structure_state_tf": structure_state_tf,
                 "structure_state_15m": structure_state_15m,
                 "structure_state_1h": structure_state_1h,
+            }
+            state["trade_id_counter"] += 1
+            trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
+            top_shares = ENTRY_LEG_SHARES
+            bottom_shares = ENTRY_LEG_SHARES
+            total_shares = top_shares + bottom_shares
+            state["pending_setup"] = {
+                "trade_id": trade_id,
+                "side": candidate.get("side"),
+                "bos_ts": candidate.get("bos_ts"),
+                "bos_ts_et": candidate.get("bos_ts_et"),
+                "shares_total": total_shares,
+                "entry_top_shares": top_shares,
+                "entry_bottom_shares": bottom_shares,
+                "entry_ref_swing_high": candidate.get("entry_ref_swing_high"),
+                "entry_ref_swing_high_ts": candidate.get("entry_ref_swing_high_ts"),
+                "entry_ref_swing_high_score": candidate.get("entry_ref_swing_high_score"),
+                "entry_ref_swing_low": candidate.get("entry_ref_swing_low"),
+                "entry_ref_swing_low_ts": candidate.get("entry_ref_swing_low_ts"),
+                "entry_ref_swing_low_score": candidate.get("entry_ref_swing_low_score"),
+                "score_total": candidate.get("score_total"),
+                "score_pass": candidate.get("score_pass"),
+                "momentum_pass": candidate.get("momentum_pass"),
+                "volume_pass": candidate.get("volume_pass"),
+                "close_pass": candidate.get("close_pass"),
+                "break_pass": candidate.get("break_pass"),
+                "mom_value": candidate.get("mom_value"),
+                "vol_value": candidate.get("vol_value"),
+                "close_strength_value": candidate.get("close_strength_value"),
+                "break_distance_value": candidate.get("break_distance_value"),
+                "structure_state_tf": candidate.get("structure_state_tf"),
+                "structure_state_15m": candidate.get("structure_state_15m"),
+                "structure_state_1h": candidate.get("structure_state_1h"),
                 "fvg": None,
                 "setup_id": None,
                 "notes": "awaiting_first_same_direction_fvg_after_bos",
             }
+            state["pending_rearm_setup"] = None
             if DEBUG_LOGS:
                 print(
                     f"[BOS_FVG_V1] setup armed | Symbol={symbol} | TF={timeframe} | TradeID={trade_id} | "
-                    f"Side={chosen_side} | BOS_TS={last_ts} | BOSScore={chosen_score_total:.2f}"
+                    f"Side={state['pending_setup'].get('side')} | BOS_TS={state['pending_setup'].get('bos_ts')} | "
+                    f"BOSScore={_safe_float(state['pending_setup'].get('score_total'), 0.0):.2f}"
                 )
 
     # FVG discovery
