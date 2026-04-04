@@ -12,6 +12,7 @@ _ET = ZoneInfo("America/New_York")
 DEBUG_LOGS = str(os.getenv("BOS_FVG_DEBUG_LOGS", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 ENTRY_LEG_SHARES = 100
 BRIDGE_VERSION = (os.getenv("BOS_FVG_LTF_VERSION") or "v1").strip() or "v1"
+BRIDGE_MANUAL_EOD_CLOSE = str(os.getenv("BOS_FVG_LTF_MANUAL_EOD_CLOSE", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -233,7 +234,7 @@ def _bridge_trade_log(action: str, row: Dict[str, Any], reason: str) -> None:
                 setup_id = tag.split(":", 1)[1]
                 break
     print(
-        f"[BOS_FVG_V1][TRADE_LOG] ACTION={action} | Symbol={row.get('symbol')} | TF={row.get('entry_tf')} | "
+        f"[BOS_FVG_V1][TRADE_STATE_LOG] ACTION={action} | Symbol={row.get('symbol')} | TF={row.get('entry_tf')} | "
         f"ID={setup_id} | Leg={row.get('leg')} | Trade={row.get('trade')} | Entry={row.get('entry_level')} | "
         f"SL={row.get('sl_level')} | Status={row.get('status')} | Manage={row.get('manage')} | Reason={reason}"
     )
@@ -1173,7 +1174,7 @@ def evaluate_bos_fvg_ltf(
 
         current_day_et = last_dt.astimezone(_ET).date().isoformat() if last_dt else None
         last_rth_day = pos.get("last_rth_day")
-        if current_day_et and last_rth_day and current_day_et > last_rth_day and _safe_int(pos.get("total_shares_open"), 0) > 0:
+        if BRIDGE_MANUAL_EOD_CLOSE and current_day_et and last_rth_day and current_day_et > last_rth_day and _safe_int(pos.get("total_shares_open"), 0) > 0:
             eod_px = _safe_float(pos.get("last_rth_1m_close"))
             eod_ts = pos.get("last_rth_1m_close_ts")
             eod_source = str(pos.get("last_rth_1m_close_source") or "last_1m_close")
@@ -1261,7 +1262,7 @@ def evaluate_bos_fvg_ltf(
                 _close_trade(close_px, "INVALIDATION", "close")
 
         pos = state.get("open_position")
-        if pos and _safe_int(pos.get("total_shares_open"), 0) > 0 and _is_rth_eod(last_candle, last_dt, timeframe):
+        if BRIDGE_MANUAL_EOD_CLOSE and pos and _safe_int(pos.get("total_shares_open"), 0) > 0 and _is_rth_eod(last_candle, last_dt, timeframe):
             eod_px, eod_source = _get_eod_exit_price(last_candle, close_px, spot_last_candle)
             if eod_px is not None:
                 _close_trade(eod_px, "EOD", eod_source)
