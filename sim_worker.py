@@ -3,12 +3,15 @@ import asyncio
 import datetime as dt
 import uuid
 import logging
+import json
+import math
 import io
 import sys
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
 import re
+from decimal import Decimal
 
 import httpx
 
@@ -26,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [sim_worker] %(message)s",
 )
 logger = logging.getLogger("sim_worker")
-logger.disabled = True  # Logs disabled; keep strategy logs only
+logger.disabled = False  # Keep enabled for simulation diagnostics.
 # Silence per-request HTTP client logs such as:
 # "HTTP Request: POST ... \"HTTP/1.1 200 OK\""
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -73,7 +76,18 @@ SIMULATION_RUNS_ALLOWED_COLUMNS = {
 
 def _sanitize_simulation_runs_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only columns that exist in simulation_runs to avoid PostgREST 400 errors."""
-    return {k: v for k, v in payload.items() if k in SIMULATION_RUNS_ALLOWED_COLUMNS}
+    sanitized = {k: v for k, v in payload.items() if k in SIMULATION_RUNS_ALLOWED_COLUMNS}
+    original_keys = list(payload.keys())
+    sanitized_keys = list(sanitized.keys())
+    dropped_keys = [k for k in original_keys if k not in sanitized]
+    if dropped_keys:
+        logger.warning(
+            "[SIM_RUN_DIAG] sanitize_simulation_runs_payload dropped keys original=%s sanitized=%s dropped=%s",
+            original_keys,
+            sanitized_keys,
+            dropped_keys,
+        )
+    return sanitized
 
 
 
@@ -104,6 +118,130 @@ def _load_seed_counts_from_env() -> Dict[str, int]:
 
 
 # ----------------------------- Supabase REST -----------------------------
+
+_DIAG_PREVIEW_MAX = 300
+_DIAG_JSON_PREVIEW_MAX = 4000
+_DIAG_MAX_ISSUES_LOG = 200
+
+
+def _diag_preview(value: Any, limit: int = _DIAG_PREVIEW_MAX) -> str:
+    try:
+        text = repr(value)
+    except Exception as e:
+        text = f"<repr_failed {type(value).__name__}: {e}>"
+    if len(text) > limit:
+        return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+    return text
+
+
+def _diag_recursive_json_issues(value: Any, path: str = "root") -> list[str]:
+    issues: list[str] = []
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return issues
+
+    if isinstance(value, float):
+        if math.isnan(value):
+            issues.append(f"{path}: non-JSON-safe float NaN")
+        elif math.isinf(value):
+            issues.append(f"{path}: non-JSON-safe float {'+Inf' if value > 0 else '-Inf'}")
+        return issues
+
+    if isinstance(value, Decimal):
+        issues.append(f"{path}: Decimal value detected ({_diag_preview(value, 120)})")
+        return issues
+
+    if isinstance(value, (dt.datetime, dt.date)):
+        issues.append(f"{path}: datetime/date object detected ({type(value).__name__})")
+        return issues
+
+    if isinstance(value, (bytes, bytearray)):
+        issues.append(f"{path}: bytes/bytearray detected")
+        return issues
+
+    if isinstance(value, tuple):
+        issues.append(f"{path}: tuple detected (JSON will coerce to array)")
+        for i, item in enumerate(value):
+            issues.extend(_diag_recursive_json_issues(item, f"{path}[{i}]"))
+        return issues
+
+    if isinstance(value, set):
+        issues.append(f"{path}: set detected (non-JSON-safe)")
+        for i, item in enumerate(sorted(list(value), key=lambda x: repr(x))):
+            issues.extend(_diag_recursive_json_issues(item, f"{path}{{{i}}}"))
+        return issues
+
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            issues.extend(_diag_recursive_json_issues(item, f"{path}[{i}]"))
+        return issues
+
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str):
+                child_path = f"{path}.{k}" if path else k
+            else:
+                child_path = f"{path}.<non_str_key:{type(k).__name__}>"
+                issues.append(
+                    f"{child_path}: dict key is non-string ({_diag_preview(k, 120)})"
+                )
+            issues.extend(_diag_recursive_json_issues(v, child_path))
+        return issues
+
+    issues.append(
+        f"{path}: custom/non-primitive object type={type(value).__name__} preview={_diag_preview(value, 120)}"
+    )
+    return issues
+
+
+def _diag_top_level_type_map(payload: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    out: Dict[str, Dict[str, str]] = {}
+    for key, value in payload.items():
+        out[str(key)] = {
+            "type": type(value).__name__,
+            "preview": _diag_preview(value),
+        }
+    return out
+
+
+def _diag_json_dumps_strict(payload: Dict[str, Any], *, context: str) -> Optional[str]:
+    try:
+        return json.dumps(payload, allow_nan=False, default=str)
+    except Exception as e:
+        issues = _diag_recursive_json_issues(payload)
+        issue_count = len(issues)
+        shown = issues[:_DIAG_MAX_ISSUES_LOG]
+        logger.error(
+            "[SIM_RUN_DIAG] strict json serialization failed context=%s error=%s issues_count=%d issues=%s",
+            context,
+            e,
+            issue_count,
+            shown,
+        )
+        if issue_count > _DIAG_MAX_ISSUES_LOG:
+            logger.error(
+                "[SIM_RUN_DIAG] strict json serialization issues truncated context=%s shown=%d total=%d",
+                context,
+                _DIAG_MAX_ISSUES_LOG,
+                issue_count,
+            )
+        return None
+
+
+def _diag_json_preview(payload: Dict[str, Any], *, strict: bool, context: str) -> str:
+    try:
+        text = json.dumps(payload, allow_nan=not strict, default=str)
+    except Exception as e:
+        logger.error(
+            "[SIM_RUN_DIAG] json preview serialization failed context=%s strict=%s error=%s",
+            context,
+            strict,
+            e,
+        )
+        text = _diag_preview(payload, _DIAG_JSON_PREVIEW_MAX)
+    if len(text) > _DIAG_JSON_PREVIEW_MAX:
+        return f"{text[:_DIAG_JSON_PREVIEW_MAX]}...<truncated {len(text) - _DIAG_JSON_PREVIEW_MAX} chars>"
+    return text
 
 def _sb_env() -> tuple[str, str]:
     url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
@@ -385,21 +523,49 @@ def _build_trades_payload(bot: IndicatorBot, symbol: str) -> tuple[Dict[str, Any
     tf_map = bot._sim_strategy_results.get(sym, {}) if hasattr(bot, "_sim_strategy_results") else {}
 
     picked: Optional[Dict[str, Any]] = None
+    picked_key: Optional[str] = None
     for tf in ("1m", "5m", "3m", "15m", "1h", "1d", "1w"):
         result = tf_map.get(tf)
         if isinstance(result, dict):
             picked = result
+            picked_key = tf
             break
     if picked is None:
-        for result in tf_map.values():
+        for tf, result in tf_map.items():
             if isinstance(result, dict):
                 picked = result
+                picked_key = str(tf)
                 break
 
     perf = (picked or {}).get("performance") if isinstance(picked, dict) else {}
     perf = perf if isinstance(perf, dict) else {}
     trade_log = (picked or {}).get("trade_log") if isinstance(picked, dict) else []
     trade_log = trade_log if isinstance(trade_log, list) else []
+    picked_keys = sorted(list((picked or {}).keys())) if isinstance(picked, dict) else []
+    has_trade_summary = isinstance((picked or {}).get("trade_summary"), dict) if isinstance(picked, dict) else False
+    has_trade_list = isinstance((picked or {}).get("trade_list"), list) if isinstance(picked, dict) else False
+    has_performance = isinstance((picked or {}).get("performance"), dict) if isinstance(picked, dict) else False
+    has_trade_log = isinstance((picked or {}).get("trade_log"), list) if isinstance(picked, dict) else False
+    logger.info(
+        "[SIM_RUN_DIAG] trades_payload selection symbol=%s picked_result_key=%s picked_top_keys=%s has_performance=%s has_trade_log=%s has_trade_summary=%s has_trade_list=%s",
+        sym,
+        picked_key,
+        picked_keys,
+        has_performance,
+        has_trade_log,
+        has_trade_summary,
+        has_trade_list,
+    )
+    if not has_performance and has_trade_summary:
+        logger.warning(
+            "[SIM_RUN_DIAG] strategy contract mismatch symbol=%s performance missing but trade_summary exists",
+            sym,
+        )
+    if not has_trade_log and has_trade_list:
+        logger.warning(
+            "[SIM_RUN_DIAG] strategy contract mismatch symbol=%s trade_log missing but trade_list exists",
+            sym,
+        )
 
     trades_summary: Dict[str, Any] = {
         "total_trades": int(perf.get("total_trades", len(trade_log)) or 0),
@@ -472,26 +638,85 @@ async def _create_simulation_run(
         "updated_at": now,
     }
 
+    sanitized_full_payload = _sanitize_simulation_runs_payload(full_payload)
     try:
+        strict_json = _diag_json_dumps_strict(
+            sanitized_full_payload,
+            context=f"create_simulation_run.insert.run_id={run_id}",
+        )
+        issues = _diag_recursive_json_issues(sanitized_full_payload)
+        logger.info(
+            "[SIM_RUN_DIAG] create_simulation_run payload diagnostics run_id=%s original_keys=%s sanitized_keys=%s type_map=%s issues_count=%d strict_json_ok=%s",
+            run_id,
+            list(full_payload.keys()),
+            list(sanitized_full_payload.keys()),
+            _diag_top_level_type_map(sanitized_full_payload),
+            len(issues),
+            strict_json is not None,
+        )
+        if issues:
+            shown = issues[:_DIAG_MAX_ISSUES_LOG]
+            logger.warning(
+                "[SIM_RUN_DIAG] create_simulation_run payload issues run_id=%s issues=%s",
+                run_id,
+                shown,
+            )
+            if len(issues) > _DIAG_MAX_ISSUES_LOG:
+                logger.warning(
+                    "[SIM_RUN_DIAG] create_simulation_run payload issues truncated run_id=%s shown=%d total=%d",
+                    run_id,
+                    _DIAG_MAX_ISSUES_LOG,
+                    len(issues),
+                )
+        logger.info(
+            "[SIM_RUN_DIAG] create_simulation_run focused fields run_id=%s trades_summary_type=%s trades_summary_preview=%s event_counters_type=%s event_counters_preview=%s config_type=%s config_preview=%s",
+            run_id,
+            type(sanitized_full_payload.get('trades_summary')).__name__,
+            _diag_preview(sanitized_full_payload.get('trades_summary')),
+            type(sanitized_full_payload.get('event_counters')).__name__,
+            _diag_preview(sanitized_full_payload.get('event_counters')),
+            type(sanitized_full_payload.get('config')).__name__,
+            _diag_preview(sanitized_full_payload.get('config')),
+        )
         await _sb_insert(
             client,
             base_url,
             key,
             "simulation_runs",
-            payload=_sanitize_simulation_runs_payload(full_payload),
+            payload=sanitized_full_payload,
             returning="minimal",
         )
     except httpx.HTTPStatusError as e:
+        request = e.request
+        response = e.response
+        issues_on_error = _diag_recursive_json_issues(sanitized_full_payload)
+        logger.error(
+            "[SIM_RUN_DIAG] simulation_runs insert failed run_id=%s method=%s url=%s status=%s headers=%s response_body=%s payload_preview=%s recursive_issues_count=%d recursive_issues=%s",
+            run_id,
+            request.method if request is not None else None,
+            str(request.url) if request is not None else None,
+            response.status_code if response is not None else None,
+            dict(response.headers) if response is not None else None,
+            (response.text[:_DIAG_JSON_PREVIEW_MAX] if response is not None and response.text else ""),
+            _diag_json_preview(
+                sanitized_full_payload,
+                strict=False,
+                context=f"create_simulation_run.insert_error.run_id={run_id}",
+            ),
+            len(issues_on_error),
+            issues_on_error[:_DIAG_MAX_ISSUES_LOG],
+        )
         # Some deployments have a reduced schema and reject one or more JSON columns.
         # Retry with a strict minimal payload so run tracking is still created.
         body = e.response.text[:500] if e.response is not None else str(e)
         logger.warning("full simulation_runs insert failed (retrying minimal payload): %s", body)
+        sanitized_fallback_payload = _sanitize_simulation_runs_payload(fallback_payload)
         await _sb_insert(
             client,
             base_url,
             key,
             "simulation_runs",
-            payload=_sanitize_simulation_runs_payload(fallback_payload),
+            payload=sanitized_fallback_payload,
             returning="minimal",
         )
 
@@ -505,15 +730,84 @@ async def _update_simulation_run(
     body = dict(payload)
     body["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     sanitized = _sanitize_simulation_runs_payload(body)
-    await _sb_patch(
-        client,
-        base_url,
-        key,
-        "simulation_runs",
-        params={"id": f"eq.{run_id}"},
-        payload=sanitized,
-        returning="minimal",
+    logger.info(
+        "[SIM_RUN_DIAG] update_simulation_run pre_patch run_id=%s original_keys=%s sanitized_keys=%s type_map=%s",
+        run_id,
+        list(body.keys()),
+        list(sanitized.keys()),
+        _diag_top_level_type_map(sanitized),
     )
+    issues = _diag_recursive_json_issues(sanitized)
+    if issues:
+        shown = issues[:_DIAG_MAX_ISSUES_LOG]
+        logger.warning(
+            "[SIM_RUN_DIAG] update_simulation_run json issues run_id=%s issues=%s",
+            run_id,
+            shown,
+        )
+        if len(issues) > _DIAG_MAX_ISSUES_LOG:
+            logger.warning(
+                "[SIM_RUN_DIAG] update_simulation_run json issues truncated run_id=%s shown=%d total=%d",
+                run_id,
+                _DIAG_MAX_ISSUES_LOG,
+                len(issues),
+            )
+    strict_json = _diag_json_dumps_strict(
+        sanitized,
+        context=f"update_simulation_run.patch.run_id={run_id}",
+    )
+    logger.info(
+        "[SIM_RUN_DIAG] update_simulation_run strict_json run_id=%s ok=%s",
+        run_id,
+        strict_json is not None,
+    )
+    logger.info(
+        "[SIM_RUN_DIAG] update_simulation_run focused fields run_id=%s trades_summary_type=%s trades_summary_preview=%s event_counters_type=%s event_counters_preview=%s config_type=%s config_preview=%s",
+        run_id,
+        type(sanitized.get("trades_summary")).__name__,
+        _diag_preview(sanitized.get("trades_summary")),
+        type(sanitized.get("event_counters")).__name__,
+        _diag_preview(sanitized.get("event_counters")),
+        type(sanitized.get("config")).__name__,
+        _diag_preview(sanitized.get("config")),
+    )
+    try:
+        await _sb_patch(
+            client,
+            base_url,
+            key,
+            "simulation_runs",
+            params={"id": f"eq.{run_id}"},
+            payload=sanitized,
+            returning="minimal",
+        )
+    except httpx.HTTPStatusError as e:
+        request = e.request
+        response = e.response
+        logger.error(
+            "[SIM_RUN_DIAG] simulation_runs patch failed run_id=%s method=%s url=%s status=%s headers=%s response_body=%s payload_preview=%s recursive_issues_count=%d recursive_issues=%s",
+            run_id,
+            request.method if request is not None else None,
+            str(request.url) if request is not None else None,
+            response.status_code if response is not None else None,
+            dict(response.headers) if response is not None else None,
+            (response.text[:_DIAG_JSON_PREVIEW_MAX] if response is not None and response.text else ""),
+            _diag_json_preview(
+                sanitized,
+                strict=False,
+                context=f"update_simulation_run.patch_error.run_id={run_id}",
+            ),
+            len(issues),
+            issues[:_DIAG_MAX_ISSUES_LOG],
+        )
+        if len(issues) > _DIAG_MAX_ISSUES_LOG:
+            logger.error(
+                "[SIM_RUN_DIAG] simulation_runs patch issues truncated run_id=%s shown=%d total=%d",
+                run_id,
+                _DIAG_MAX_ISSUES_LOG,
+                len(issues),
+            )
+        raise
 
 
 async def _claim_one_job(client: httpx.AsyncClient) -> Optional[Dict[str, Any]]:
@@ -846,6 +1140,12 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
             trades_summary_payload.update(parsed_tf_summaries)
         elif base_trades_summary:
             trades_summary_payload["multi"] = dict(base_trades_summary)
+        logger.info(
+            "[SIM_RUN_DIAG] final trades_summary payload run_id=%s top_level_keys=%s timeframe_previews=%s",
+            run_id,
+            list(trades_summary_payload.keys()),
+            {k: _diag_preview(v) for k, v in trades_summary_payload.items()},
+        )
 
         sim_start_ts = _to_iso_utc((first_live_to_bot or {}).get("ts"))
         sim_end_ts = _to_iso_utc((last_live_to_bot or {}).get("ts"))
