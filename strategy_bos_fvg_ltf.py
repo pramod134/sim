@@ -317,6 +317,37 @@ def _bridge_setup_rows(state: Dict[str, Any], setup_id: Optional[str]) -> List[D
     return [r for r in state["bridge_rows"] if r.get("setup_id") == setup_id]
 
 
+def _bridge_tag_value(row: Dict[str, Any], prefix: str) -> Optional[str]:
+    tags = row.get("tags") or []
+    want = f"{prefix}:"
+    for tag in tags:
+        if isinstance(tag, str) and tag.startswith(want):
+            return tag.split(":", 1)[1].strip() or None
+    return None
+
+
+def _bridge_scope_rows(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    timeframe: str,
+    strategy_name: str = "bos_fvg_ltf",
+    version: str = BRIDGE_VERSION,
+) -> List[Dict[str, Any]]:
+    scoped: List[Dict[str, Any]] = []
+    for row in state.get("bridge_rows", []) or []:
+        if str(row.get("symbol") or "") != str(symbol):
+            continue
+        if str(row.get("entry_tf") or "") != str(timeframe):
+            continue
+        if _bridge_tag_value(row, "strategy") != strategy_name:
+            continue
+        if _bridge_tag_value(row, "version") != version:
+            continue
+        scoped.append(row)
+    return scoped
+
+
 def _bridge_update_rows(rows: List[Dict[str, Any]], updates: Dict[str, Any], reason: str) -> int:
     changed = 0
     for row in rows:
@@ -811,9 +842,14 @@ def evaluate_bos_fvg_ltf(
     if not state["open_position"] and cfg["enabled"] and chosen_bos_detected and chosen_score_pass and cfg["max_open_positions"] >= 1:
         pending = state["pending_setup"]
         if pending:
-            pending_setup_id = (pending or {}).get("setup_id") or state.get("bridge_current_setup_id")
-            pending_rows = _bridge_setup_rows(state, pending_setup_id)
-            has_live_rows = any(r.get("db_active_status") == "nt-managing" for r in pending_rows)
+            scope_rows = _bridge_scope_rows(
+                state,
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_name="bos_fvg_ltf",
+                version=BRIDGE_VERSION,
+            )
+            has_live_rows = any(r.get("db_active_status") == "nt-managing" for r in scope_rows)
             if not has_live_rows:
                 state["pending_rearm_setup"] = {
                     "side": chosen_side,
@@ -839,11 +875,28 @@ def evaluate_bos_fvg_ltf(
                     "structure_state_15m": structure_state_15m,
                     "structure_state_1h": structure_state_1h,
                 }
-                waiting_rows = [r for r in pending_rows if r.get("db_active_seen") and r.get("db_active_status") == "nt-waiting"]
+                waiting_rows = [
+                    r for r in scope_rows
+                    if r.get("db_active_seen")
+                    and r.get("db_active_status") == "nt-waiting"
+                    and str(r.get("manage") or "") != "C"
+                ]
                 if waiting_rows:
                     _bridge_update_rows(waiting_rows, {"manage": "C"}, "phase2_case2_cancel")
-                cancel_confirmed = bool(waiting_rows) and all(str(r.get("db_active_manage") or "") == "C" for r in waiting_rows)
-                if cancel_confirmed:
+                # Do not publish a new setup until ALL armed rows in this strategy/version/symbol/tf
+                # scope have been DB-confirmed as canceled (or disappeared).
+                scope_waiting_after = [
+                    r for r in _bridge_scope_rows(
+                        state,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        strategy_name="bos_fvg_ltf",
+                        version=BRIDGE_VERSION,
+                    )
+                    if r.get("db_active_seen") and r.get("db_active_status") == "nt-waiting"
+                ]
+                cancel_confirmed = all(str(r.get("db_active_manage") or "") == "C" for r in scope_waiting_after)
+                if cancel_confirmed and scope_waiting_after:
                     state["pending_setup"] = None
 
         if not state.get("pending_setup"):
