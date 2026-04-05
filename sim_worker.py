@@ -33,6 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger("sim_worker")
 logger.disabled = True  # Logs disabled; keep strategy logs only
 _BRIDGE_NEW_INSERTED_KEYS: set[str] = set()
+_BRIDGE_ACTIVE_PATCH_LAST: Dict[str, Dict[str, Any]] = {}
 # Silence per-request HTTP client logs such as:
 # "HTTP Request: POST ... \"HTTP/1.1 200 OK\""
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -369,15 +370,38 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
                     body = (e.response.text if e.response is not None else str(e))[:240]
                     print(f"[BOS_FVG_BRIDGE][WARN] table=new_trades id={setup_id} leg={leg} trade={trade} err={body}")
 
-        if db_active_seen:
+        should_patch_active = False
+        active_patch_payload: Dict[str, Any] = {}
+
+        # Phase 2 (armed): only allow explicit cancel via manage="C"
+        if db_active_seen and str(row.get("manage") or "") == "C":
+            active_patch_payload = _sanitize_bridge_active_trades_payload(
+                {
+                    "manage": "C",
+                    "note": f"bridge:{setup_id}",
+                }
+            )
+            should_patch_active = bool(active_patch_payload)
+
+        # Phase 3 (live): allow live-management fields only when DB says row is live
+        elif db_active_seen and str(db_active_status or "") == "nt-managing":
+            active_patch_payload = _sanitize_bridge_active_trades_payload(
+                {
+                    "manage": row.get("manage"),
+                    "sl_level": row.get("sl_level"),
+                    "note": f"bridge:{setup_id}",
+                }
+            )
+            should_patch_active = bool(active_patch_payload)
+
+        patch_key = f"{setup_id}:{leg}:{trade}"
+        if should_patch_active:
+            last_payload = _BRIDGE_ACTIVE_PATCH_LAST.get(patch_key)
+            if last_payload == active_patch_payload:
+                should_patch_active = False
+
+        if should_patch_active:
             try:
-                active_patch_payload = _sanitize_bridge_active_trades_payload(
-                    {
-                        "manage": row.get("manage"),
-                        "sl_level": row.get("sl_level"),
-                        "note": f"bridge:{setup_id}",
-                    }
-                )
                 print(
                     f"[BOS_FVG_BRIDGE][DB_WRITE] action=patch table=active_trades "
                     f"id={setup_id} leg={leg} trade={trade} payload={json.dumps(active_patch_payload, default=str, sort_keys=True)}"
@@ -391,6 +415,7 @@ async def _sync_bos_fvg_bridge_rows_to_supabase(client: httpx.AsyncClient) -> No
                     payload=active_patch_payload,
                     returning="minimal",
                 )
+                _BRIDGE_ACTIVE_PATCH_LAST[patch_key] = dict(active_patch_payload)
                 print(f"[BOS_FVG_BRIDGE][DB_APPLIED] action=patch table=active_trades id={setup_id} leg={leg} trade={trade}")
             except httpx.HTTPStatusError as e:
                 body = (e.response.text if e.response is not None else str(e))[:240]
