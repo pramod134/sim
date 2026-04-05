@@ -725,13 +725,16 @@ async def _update_simulation_run(
     client: httpx.AsyncClient,
     run_id: str,
     payload: Dict[str, Any],
+    *,
+    source: str = "unknown",
 ) -> None:
     base_url, key = _sb_env()
     body = dict(payload)
     body["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
     sanitized = _sanitize_simulation_runs_payload(body)
     logger.info(
-        "[SIM_RUN_DIAG] update_simulation_run pre_patch run_id=%s original_keys=%s sanitized_keys=%s type_map=%s",
+        "[SIM_RUN_DIAG] update_simulation_run pre_patch source=%s run_id=%s original_keys=%s sanitized_keys=%s type_map=%s",
+        source,
         run_id,
         list(body.keys()),
         list(sanitized.keys()),
@@ -741,13 +744,15 @@ async def _update_simulation_run(
     if issues:
         shown = issues[:_DIAG_MAX_ISSUES_LOG]
         logger.warning(
-            "[SIM_RUN_DIAG] update_simulation_run json issues run_id=%s issues=%s",
+            "[SIM_RUN_DIAG] update_simulation_run json issues source=%s run_id=%s issues=%s",
+            source,
             run_id,
             shown,
         )
         if len(issues) > _DIAG_MAX_ISSUES_LOG:
             logger.warning(
-                "[SIM_RUN_DIAG] update_simulation_run json issues truncated run_id=%s shown=%d total=%d",
+                "[SIM_RUN_DIAG] update_simulation_run json issues truncated source=%s run_id=%s shown=%d total=%d",
+                source,
                 run_id,
                 _DIAG_MAX_ISSUES_LOG,
                 len(issues),
@@ -757,12 +762,14 @@ async def _update_simulation_run(
         context=f"update_simulation_run.patch.run_id={run_id}",
     )
     logger.info(
-        "[SIM_RUN_DIAG] update_simulation_run strict_json run_id=%s ok=%s",
+        "[SIM_RUN_DIAG] update_simulation_run strict_json source=%s run_id=%s ok=%s",
+        source,
         run_id,
         strict_json is not None,
     )
     logger.info(
-        "[SIM_RUN_DIAG] update_simulation_run focused fields run_id=%s trades_summary_type=%s trades_summary_preview=%s event_counters_type=%s event_counters_preview=%s config_type=%s config_preview=%s",
+        "[SIM_RUN_DIAG] update_simulation_run focused fields source=%s run_id=%s trades_summary_type=%s trades_summary_preview=%s event_counters_type=%s event_counters_preview=%s config_type=%s config_preview=%s",
+        source,
         run_id,
         type(sanitized.get("trades_summary")).__name__,
         _diag_preview(sanitized.get("trades_summary")),
@@ -785,7 +792,8 @@ async def _update_simulation_run(
         request = e.request
         response = e.response
         logger.error(
-            "[SIM_RUN_DIAG] simulation_runs patch failed run_id=%s method=%s url=%s status=%s headers=%s response_body=%s payload_preview=%s recursive_issues_count=%d recursive_issues=%s",
+            "[SIM_RUN_DIAG] simulation_runs patch failed source=%s run_id=%s method=%s url=%s status=%s headers=%s response_body=%s payload_preview=%s recursive_issues_count=%d recursive_issues=%s",
+            source,
             run_id,
             request.method if request is not None else None,
             str(request.url) if request is not None else None,
@@ -802,7 +810,8 @@ async def _update_simulation_run(
         )
         if len(issues) > _DIAG_MAX_ISSUES_LOG:
             logger.error(
-                "[SIM_RUN_DIAG] simulation_runs patch issues truncated run_id=%s shown=%d total=%d",
+                "[SIM_RUN_DIAG] simulation_runs patch issues truncated source=%s run_id=%s shown=%d total=%d",
+                source,
                 run_id,
                 _DIAG_MAX_ISSUES_LOG,
                 len(issues),
@@ -1150,30 +1159,42 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
         sim_start_ts = _to_iso_utc((first_live_to_bot or {}).get("ts"))
         sim_end_ts = _to_iso_utc((last_live_to_bot or {}).get("ts"))
         end_time = dt.datetime.now(dt.timezone.utc).isoformat()
-        await _update_simulation_run(
-            client,
-            run_id,
-            payload={
+        final_run_payload = {
+            "symbol": symbol,
+            "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
+            "strategy_version": "v1.0",
+            "status": "done",
+            "end_time": end_time,
+            "simulation_start_time": sim_start_ts,
+            "simulation_end_time": sim_end_ts,
+            "event_counters": event_counters,
+            "event_candles": event_candles,
+            "trades_summary": trades_summary_payload,
+            "trades": trades,
+            "config": {
                 "symbol": symbol,
-                "strategy_name": "SPY_VWAP_Pullback_Scalp_Sim",
-                "strategy_version": "v1.0",
-                "status": "done",
-                "end_time": end_time,
-                "simulation_start_time": sim_start_ts,
-                "simulation_end_time": sim_end_ts,
-                "event_counters": event_counters,
-                "event_candles": event_candles,
-                "trades_summary": trades_summary_payload,
-                "trades": trades,
-                "config": {
-                    "symbol": symbol,
-                    "seed_date": seed_date,
-                    "sim_period": sim_period,
-                    "seed_counts": seed_counts,
-                },
-                "error_message": None,
+                "seed_date": seed_date,
+                "sim_period": sim_period,
+                "seed_counts": seed_counts,
             },
-        )
+            "error_message": None,
+        }
+        try:
+            await _update_simulation_run(
+                client,
+                run_id,
+                payload=final_run_payload,
+                source="final_success_update",
+            )
+        except Exception:
+            logger.exception(
+                "[SIM_RUN_DIAG] first simulation_runs failure happened during final_success_update "
+                "run_id=%s symbol=%s payload_preview=%s",
+                run_id,
+                symbol,
+                _diag_preview(final_run_payload, _DIAG_JSON_PREVIEW_MAX),
+            )
+            raise
         await _mark_done(client, symbol_db)
         try:
             base_url, key = _sb_env()
@@ -1216,6 +1237,7 @@ async def _run_claimed_job(client: httpx.AsyncClient, job: Dict[str, Any]) -> in
                         "sim_period": sim_period,
                     },
                 },
+                source="error_handler_update",
             )
         except Exception as e3:
             logger.warning("failed to update simulation_runs error payload run_id=%s: %s", run_id, e3)
