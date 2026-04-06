@@ -9,7 +9,9 @@ from zoneinfo import ZoneInfo
 _BOS_FVG_LTF_STATE: Dict[Tuple[str, str], Dict[str, Any]] = {}
 _ET = ZoneInfo("America/New_York")
 DEBUG_LOGS = str(os.getenv("BOS_FVG_DEBUG_LOGS", "0")).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
-ENTRY_LEG_SHARES = 100
+ENTRY_TOP_LONG_SHARES = 100
+ENTRY_MIDDLE_LONG_SHARES = 200
+ENTRY_BOTTOM_LONG_SHARES = 300
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -646,9 +648,14 @@ def evaluate_bos_fvg_ltf(
 
             state["trade_id_counter"] += 1
             trade_id = f"{symbol}_{timeframe}_{state['trade_id_counter']}"
-            top_shares = ENTRY_LEG_SHARES
-            middle_shares = ENTRY_LEG_SHARES
-            bottom_shares = ENTRY_LEG_SHARES
+            if chosen_side == "long":
+                top_shares = ENTRY_TOP_LONG_SHARES
+                middle_shares = ENTRY_MIDDLE_LONG_SHARES
+                bottom_shares = ENTRY_BOTTOM_LONG_SHARES
+            else:
+                top_shares = ENTRY_BOTTOM_LONG_SHARES
+                middle_shares = ENTRY_MIDDLE_LONG_SHARES
+                bottom_shares = ENTRY_TOP_LONG_SHARES
             total_shares = top_shares + middle_shares + bottom_shares
             state["pending_setup"] = {
                 "trade_id": trade_id,
