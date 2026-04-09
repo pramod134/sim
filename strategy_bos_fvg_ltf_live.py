@@ -199,6 +199,7 @@ def _ensure_state(symbol: str, timeframe: str) -> Dict[str, Any]:
             "bridge_setup_index": {},
             "bridge_current_setup_id": None,
             "bridge_last_swing_ts": {},
+            "bridge_last_swing_level": {},
         }
     return _BOS_FVG_LTF_STATE[key]
 
@@ -305,6 +306,8 @@ def _bridge_insert_rows(
     state["bridge_setup_index"][setup_id] = {
         "rows": rows,
         "side": side,
+        "fvg_high": fvg_high,
+        "fvg_low": fvg_low,
         "bridge_live_phase_entered": False,
     }
     state["bridge_current_setup_id"] = setup_id
@@ -1431,6 +1434,7 @@ def evaluate_bos_fvg_ltf(
     swing_reason = None
     swing_ts = None
     swing_level = None
+    swing_cmp_mode = None
     target_rows: List[Dict[str, Any]] = []
     if managing_trade1:
         if bridge_rows and bridge_rows[0].get("cp") == "call":
@@ -1440,6 +1444,7 @@ def evaluate_bos_fvg_ltf(
             swing_ts = recent_high_ts
             swing_level = recent_high_price
         swing_reason = "swing_update_trade1"
+        swing_cmp_mode = "compare_to_prev"
         target_rows = managing_trade1
     elif managing_trade2:
         if bridge_rows and bridge_rows[0].get("cp") == "call":
@@ -1449,12 +1454,33 @@ def evaluate_bos_fvg_ltf(
             swing_ts = recent_high_ts
             swing_level = recent_high_price
         swing_reason = "swing_update_trade2"
+        swing_cmp_mode = "force_new_swing"
         target_rows = managing_trade2
     if target_rows and swing_ts and swing_level is not None:
         swing_key = f"{bridge_setup_id}:{swing_reason}"
         if state["bridge_last_swing_ts"].get(swing_key) != swing_ts:
             state["bridge_last_swing_ts"][swing_key] = swing_ts
-            _bridge_update_rows(target_rows, {"sl_level": swing_level}, swing_reason)
+            setup_side = str(bridge_setup_meta.get("side") or "").lower()
+            fvg_low = _safe_float(bridge_setup_meta.get("fvg_low"))
+            fvg_high = _safe_float(bridge_setup_meta.get("fvg_high"))
+            last_swing_level = _safe_float(state["bridge_last_swing_level"].get(swing_key))
+            next_sl_level: Optional[float] = None
+            if swing_cmp_mode == "force_new_swing":
+                next_sl_level = swing_level
+            elif swing_cmp_mode == "compare_to_prev":
+                if setup_side == "long":
+                    baseline = max(v for v in (fvg_low, last_swing_level) if v is not None) if (fvg_low is not None or last_swing_level is not None) else None
+                    swing_is_higher = (last_swing_level is None) or (swing_level > last_swing_level)
+                    if swing_is_higher:
+                        next_sl_level = max(v for v in (baseline, swing_level) if v is not None) if (baseline is not None or swing_level is not None) else None
+                elif setup_side == "short":
+                    baseline = min(v for v in (fvg_high, last_swing_level) if v is not None) if (fvg_high is not None or last_swing_level is not None) else None
+                    swing_is_lower = (last_swing_level is None) or (swing_level < last_swing_level)
+                    if swing_is_lower:
+                        next_sl_level = min(v for v in (baseline, swing_level) if v is not None) if (baseline is not None or swing_level is not None) else None
+            state["bridge_last_swing_level"][swing_key] = swing_level
+            if next_sl_level is not None:
+                _bridge_update_rows(target_rows, {"sl_level": next_sl_level}, swing_reason)
     if bridge_rows:
         has_managing = any(r.get("db_active_status") == "nt-managing" for r in bridge_rows)
         has_active = any(bool(r.get("db_active_seen")) for r in bridge_rows)
