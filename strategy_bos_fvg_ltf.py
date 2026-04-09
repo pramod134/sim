@@ -756,6 +756,7 @@ def evaluate_bos_fvg_ltf(
                 "breakeven_armed_ts": None,
                 "consumed_opposite_bos_keys": set(),
                 "stop_mode": "fvg_invalidation", "breakeven_price": None,
+                "sl_price": None, "sl_reference_ts": None, "sl_reference_value": None,
                 "eod_exit_pending_day": None,
                 "last_rth_1m_close": None,
                 "last_rth_1m_close_ts": None,
@@ -898,6 +899,50 @@ def evaluate_bos_fvg_ltf(
         if low_px is not None:
             pos["lowest_price_during_trade"] = min(_safe_float(pos.get("lowest_price_during_trade"), low_px) or low_px, low_px)
         pos["bars_held"] = _safe_int(pos.get("bars_held"), 0) + 1
+
+    # Dynamic SL updates from structure swings
+    pos = state.get("open_position")
+    if pos and _safe_int(pos.get("total_shares_open"), 0) > 0:
+        side = str(pos.get("side") or "").lower()
+        sl_price = _safe_float(pos.get("sl_price"))
+        bos1_done = bool(pos.get("first_opposite_bos_exit_done"))
+        if side == "long":
+            swing_val = _safe_float(recent_low_price)
+            swing_ts = recent_low_ts
+            if swing_val is not None and swing_ts and swing_ts != pos.get("sl_reference_ts"):
+                if bos1_done:
+                    sl_price = swing_val
+                else:
+                    baseline = max(v for v in [_safe_float(pos.get("fvg_low")), _safe_float(pos.get("sl_reference_value"))] if v is not None) if any(
+                        v is not None for v in [_safe_float(pos.get("fvg_low")), _safe_float(pos.get("sl_reference_value"))]
+                    ) else None
+                    if baseline is None:
+                        sl_price = swing_val
+                    elif swing_val > baseline:
+                        sl_price = swing_val
+                    else:
+                        sl_price = baseline
+                pos["sl_price"] = sl_price
+                pos["sl_reference_ts"] = swing_ts
+                pos["sl_reference_value"] = swing_val
+        elif side == "short":
+            swing_val = _safe_float(recent_high_price)
+            swing_ts = recent_high_ts
+            if swing_val is not None and swing_ts and swing_ts != pos.get("sl_reference_ts"):
+                if bos1_done:
+                    sl_price = swing_val
+                else:
+                    candidates = [v for v in [_safe_float(pos.get("fvg_high")), _safe_float(pos.get("sl_reference_value"))] if v is not None]
+                    baseline = min(candidates) if candidates else None
+                    if baseline is None:
+                        sl_price = swing_val
+                    elif swing_val < baseline:
+                        sl_price = swing_val
+                    else:
+                        sl_price = baseline
+                pos["sl_price"] = sl_price
+                pos["sl_reference_ts"] = swing_ts
+                pos["sl_reference_value"] = swing_val
 
     def _close_trade(
         exit_price: float,
@@ -1063,6 +1108,9 @@ def evaluate_bos_fvg_ltf(
                         pos["bos1_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
                         pos["stop_mode"] = "breakeven"
                         pos["breakeven_price"] = avg_entry
+                        pos["sl_price"] = avg_entry
+                        pos["sl_reference_ts"] = None
+                        pos["sl_reference_value"] = None
                         pos["breakeven_armed_ts"] = last_ts
                         print(
                             f"[BOS_FVG_V1] partial exit BOS1 | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
@@ -1078,20 +1126,22 @@ def evaluate_bos_fvg_ltf(
 
         pos = state.get("open_position")
         if pos and pos.get("stop_mode") == "breakeven" and _safe_int(pos.get("total_shares_open"), 0) > 0:
-            be = _safe_float(pos.get("breakeven_price"))
-            if be is not None:
+            active_sl = _safe_float(pos.get("sl_price"))
+            if active_sl is None:
+                active_sl = _safe_float(pos.get("breakeven_price"))
+            if active_sl is not None:
                 be_armed_ts = pos.get("breakeven_armed_ts")
                 be_same_candle_as_arm = bool(be_armed_ts and last_ts and be_armed_ts == last_ts)
                 be_hit = False
                 if not be_same_candle_as_arm:
-                    be_hit = (side == "long" and low_px is not None and low_px <= be) or (side == "short" and high_px is not None and high_px >= be)
+                    be_hit = (side == "long" and low_px is not None and low_px <= active_sl) or (side == "short" and high_px is not None and high_px >= active_sl)
                 if be_hit:
                     if DEBUG_LOGS:
                         print(
                             f"[BOS_FVG_V1] breakeven stop hit | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
-                            f"Side={side} | BreakevenPrice={be} | OpenShares={pos.get('total_shares_open')}"
+                            f"Side={side} | BreakevenPrice={active_sl} | OpenShares={pos.get('total_shares_open')}"
                         )
-                    _close_trade(be, "BREAKEVEN", "breakeven")
+                    _close_trade(active_sl, "BREAKEVEN", "breakeven")
 
         pos = state.get("open_position")
         if pos and _safe_int(pos.get("total_shares_open"), 0) > 0:
