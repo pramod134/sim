@@ -761,6 +761,20 @@ def evaluate_bos_fvg_ltf(
                 "last_rth_1m_close": None,
                 "last_rth_1m_close_ts": None,
                 "realized_pnl": 0.0,
+                "partial_exit_count": 0,
+                "tp1_hit": False,
+                "tp1_exit_ts": None,
+                "tp1_exit_price": None,
+                "tp1_exit_shares": 0,
+                "initial_sl_price": fvg_low if pending.get("side") == "long" else fvg_high,
+                "initial_risk_per_share": None,
+                "tp1_price": None,
+                "bos1_runner_shares": 0,
+                "bos2_runner_shares": 0,
+                "be_runner_active": False,
+                "be_runner_sl_price": None,
+                "be_runner_armed_ts": None,
+                "bos1_partial_done": False,
                 "entry_ref_swing_high": pending.get("entry_ref_swing_high"),
                 "entry_ref_swing_high_ts": pending.get("entry_ref_swing_high_ts"),
                 "entry_ref_swing_high_score": pending.get("entry_ref_swing_high_score"),
@@ -821,7 +835,11 @@ def evaluate_bos_fvg_ltf(
     pos = state.get("open_position")
     if pos and high_px is not None and low_px is not None:
         fvg_created_dt = _parse_ts(pos.get("fvg_ts"))
-        can_fill_entries = not (fvg_created_dt and last_dt and last_dt <= fvg_created_dt)
+        if pos.get("tp1_hit"):
+            can_fill_entries = False
+        else:
+            can_fill_entries = True
+        can_fill_entries = can_fill_entries and not (fvg_created_dt and last_dt and last_dt <= fvg_created_dt)
         side = pos.get("side")
         levels: List[Tuple[str, Optional[float], int]] = []
         if side == "long":
@@ -876,6 +894,18 @@ def evaluate_bos_fvg_ltf(
             if not pos.get("first_fill_ts"):
                 pos["first_fill_ts"] = last_ts
                 pos["first_fill_ts_et"] = last_ts_et
+            initial_sl = _safe_float(pos.get("initial_sl_price"))
+            avg_entry_now = _safe_float(pos.get("avg_entry_price"))
+            if avg_entry_now is not None and initial_sl is not None:
+                risk_per_share = abs(avg_entry_now - initial_sl)
+                pos["initial_risk_per_share"] = risk_per_share
+                if risk_per_share > 0:
+                    if side == "long":
+                        pos["tp1_price"] = avg_entry_now + risk_per_share
+                    else:
+                        pos["tp1_price"] = avg_entry_now - risk_per_share
+                else:
+                    pos["tp1_price"] = avg_entry_now
                 state["pending_setup"] = None
                 print(
                     f"[BOS_FVG_V1] entry fvg snapshot | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
@@ -944,6 +974,34 @@ def evaluate_bos_fvg_ltf(
                 pos["sl_reference_ts"] = swing_ts
                 pos["sl_reference_value"] = swing_val
 
+    def _close_partial_position(
+        exit_shares: int,
+        exit_price: float,
+        reason: str,
+    ) -> float:
+        p = state.get("open_position")
+        if not p:
+            return 0.0
+        shares_open = _safe_int(p.get("total_shares_open"), 0)
+        if shares_open <= 0 or exit_shares <= 0:
+            return 0.0
+
+        exit_shares = min(exit_shares, shares_open)
+        side = str(p.get("side") or "long").lower()
+        avg_entry = _safe_float(p.get("avg_entry_price"), 0.0) or 0.0
+        pnl_partial = (exit_price - avg_entry) * exit_shares if side == "long" else (avg_entry - exit_price) * exit_shares
+
+        p["realized_pnl"] = (_safe_float(p.get("realized_pnl"), 0.0) or 0.0) + pnl_partial
+        p["total_shares_open"] = shares_open - exit_shares
+        state["cash"] += exit_shares * exit_price
+
+        if _safe_int(p.get("bos1_runner_shares"), 0) > 0:
+            p["bos1_runner_shares"] = max(0, _safe_int(p.get("bos1_runner_shares"), 0) - exit_shares)
+        elif _safe_int(p.get("bos2_runner_shares"), 0) > 0:
+            p["bos2_runner_shares"] = max(0, _safe_int(p.get("bos2_runner_shares"), 0) - exit_shares)
+
+        return pnl_partial
+
     def _close_trade(
         exit_price: float,
         exit_reason: str,
@@ -996,13 +1054,13 @@ def evaluate_bos_fvg_ltf(
             "entry_ts": p.get("first_fill_ts"), "entry_ts_et": p.get("first_fill_ts_et"),
             "exit_ts": final_exit_ts, "exit_ts_et": final_exit_ts_et, "exit_price": exit_price,
             "exit_reason_final": exit_reason, "exit_source": exit_source,
-            "partial_exit_count": 1 if p.get("first_opposite_bos_exit_done") else 0,
+            "partial_exit_count": _safe_int(p.get("partial_exit_count"), 0),
             "bos_exit_count": p.get("opposite_bos_exit_count", 0),
             "bos1_ref_swing_ts": p.get("bos1_ref_swing_ts"),
             "bos1_exit_ts": p.get("bos1_exit_ts"),
             "bos2_ref_swing_ts": p.get("bos2_ref_swing_ts"),
             "bos2_exit_ts": p.get("bos2_exit_ts"),
-            "breakeven_price": p.get("breakeven_price"),
+            "breakeven_price": p.get("be_runner_sl_price") or p.get("breakeven_price"),
             "breakeven_exit_triggered": exit_reason == "BREAKEVEN",
             "invalidation_exit_triggered": exit_reason == "INVALIDATION",
             "eod_exit_triggered": exit_reason == "EOD",
@@ -1083,6 +1141,58 @@ def evaluate_bos_fvg_ltf(
         side = pos.get("side", "long")
         fvg_low = _safe_float(pos.get("fvg_low"))
         fvg_high = _safe_float(pos.get("fvg_high"))
+        avg_entry = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
+
+        # TP1 at 1R: close 50%, then split remaining 50% into:
+        # - 25% BE runner for BOS2
+        # - 25% original-SL runner for BOS1
+        if not pos.get("tp1_hit") and _safe_int(pos.get("total_shares_open"), 0) > 0:
+            tp1_price = _safe_float(pos.get("tp1_price"))
+            tp1_hit = False
+            if tp1_price is not None:
+                if side == "long":
+                    tp1_hit = high_px is not None and high_px >= tp1_price
+                else:
+                    tp1_hit = low_px is not None and low_px <= tp1_price
+
+            if tp1_hit:
+                shares_open = _safe_int(pos.get("total_shares_open"), 0)
+                tp1_exit_shares = max(1, shares_open // 2)
+                pnl_partial = _close_partial_position(tp1_exit_shares, tp1_price, "TP1")
+
+                pos["tp1_hit"] = True
+                pos["tp1_exit_ts"] = last_ts
+                pos["tp1_exit_price"] = tp1_price
+                pos["tp1_exit_shares"] = tp1_exit_shares
+                pos["partial_exit_count"] = _safe_int(pos.get("partial_exit_count"), 0) + 1
+
+                remaining_shares = _safe_int(pos.get("total_shares_open"), 0)
+                be_runner = remaining_shares // 2
+                bos1_runner = remaining_shares - be_runner
+
+                pos["bos2_runner_shares"] = be_runner
+                pos["bos1_runner_shares"] = bos1_runner
+                pos["be_runner_active"] = be_runner > 0
+                pos["be_runner_sl_price"] = avg_entry if be_runner > 0 else None
+                pos["be_runner_armed_ts"] = last_ts if be_runner > 0 else None
+                pos["breakeven_price"] = avg_entry if be_runner > 0 else None
+
+                print(
+                    f"[BOS_FVG_V1] partial exit TP1 | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
+                    f"Side={side} | ExitReason=TP1_1R | ExitPct=50 | ExitPrice={tp1_price} | ExitShares={tp1_exit_shares} | "
+                    f"RemainingSize={remaining_shares} | BOS1RunnerShares={bos1_runner} | BOS2RunnerShares={be_runner} | "
+                    f"BEPrice={avg_entry} | RealizedPnL={pnl_partial}"
+                )
+
+                if _safe_int(pos.get("total_shares_open"), 0) <= 0:
+                    _close_trade(tp1_price, "TP1", "tp1_1r")
+
+        pos = state.get("open_position")
+        if not pos:
+            return _trade_summary(state, symbol, timeframe)
+        side = pos.get("side", "long")
+        fvg_low = _safe_float(pos.get("fvg_low"))
+        fvg_high = _safe_float(pos.get("fvg_high"))
 
         # Opposite BOS exits (post-entry only)
         first_fill_dt = _parse_ts(pos.get("first_fill_ts"))
@@ -1096,52 +1206,68 @@ def evaluate_bos_fvg_ltf(
                     pos["consumed_opposite_bos_keys"] = consumed
                     pos["opposite_bos_exit_count"] = _safe_int(pos.get("opposite_bos_exit_count"), 0) + 1
                     shares_open = _safe_int(pos.get("total_shares_open"), 0)
-                    if pos["opposite_bos_exit_count"] == 1 and shares_open > 0:
-                        exit_shares = max(1, shares_open // 2)
-                        avg_entry = _safe_float(pos.get("avg_entry_price"), 0.0) or 0.0
-                        pnl_partial = (close_px - avg_entry) * exit_shares if side == "long" else (avg_entry - close_px) * exit_shares
-                        pos["realized_pnl"] = (_safe_float(pos.get("realized_pnl"), 0.0) or 0.0) + pnl_partial
-                        state["cash"] += exit_shares * close_px
-                        pos["total_shares_open"] = shares_open - exit_shares
-                        pos["first_opposite_bos_exit_done"] = True
-                        pos["bos1_exit_ts"] = last_ts
-                        pos["bos1_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
-                        pos["stop_mode"] = "breakeven"
-                        pos["breakeven_price"] = avg_entry
-                        pos["sl_price"] = avg_entry
-                        pos["sl_reference_ts"] = None
-                        pos["sl_reference_value"] = None
-                        pos["breakeven_armed_ts"] = last_ts
-                        print(
-                            f"[BOS_FVG_V1] partial exit BOS1 | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
-                            f"Side={side} | ExitReason=BOS1 | ExitPct=50 | ExitPrice={close_px} | ExitShares={exit_shares} | "
-                            f"RemainingSize={pos.get('total_shares_open')} | New_SL=BE | BreakevenPrice={avg_entry} | RealizedPnL={pnl_partial}"
-                        )
-                        if _safe_int(pos.get("total_shares_open"), 0) <= 0:
-                            _close_trade(close_px, "BOS1", "close")
+                    # New model:
+                    # BOS exits are only active after TP1 split is armed.
+                    # BOS1 closes only the original-SL runner.
+                    # BOS2 closes only the BE runner.
+                    if not pos.get("tp1_hit") or shares_open <= 0:
+                        pass
+                    elif pos["opposite_bos_exit_count"] == 1:
+                        exit_shares = _safe_int(pos.get("bos1_runner_shares"), 0)
+                        if exit_shares > 0:
+                            pnl_partial = _close_partial_position(exit_shares, close_px, "BOS1")
+                            pos["first_opposite_bos_exit_done"] = True
+                            pos["bos1_partial_done"] = True
+                            pos["bos1_exit_ts"] = last_ts
+                            pos["bos1_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
+                            pos["partial_exit_count"] = _safe_int(pos.get("partial_exit_count"), 0) + 1
+                            pos["bos1_runner_shares"] = 0
+                            print(
+                                f"[BOS_FVG_V1] partial exit BOS1 | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
+                                f"Side={side} | ExitReason=BOS1 | ExitPct=25 | ExitPrice={close_px} | ExitShares={exit_shares} | "
+                                f"RemainingSize={pos.get('total_shares_open')} | BERunnerShares={pos.get('bos2_runner_shares')} | RealizedPnL={pnl_partial}"
+                            )
+                            if _safe_int(pos.get("total_shares_open"), 0) <= 0:
+                                _close_trade(close_px, "BOS1", "close")
                     elif pos["opposite_bos_exit_count"] >= 2 and _safe_int(pos.get("total_shares_open"), 0) > 0:
-                        pos["bos2_exit_ts"] = last_ts
-                        pos["bos2_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
-                        _close_trade(close_px, "BOS2", "close")
+                        exit_shares = _safe_int(pos.get("bos2_runner_shares"), 0)
+                        if exit_shares > 0:
+                            pos["bos2_exit_ts"] = last_ts
+                            pos["bos2_ref_swing_ts"] = recent_high_ts if chosen_side == "long" else recent_low_ts if chosen_side == "short" else None
+                            pos["be_runner_active"] = False
+                            pos["bos2_runner_shares"] = 0
+                            _close_trade(close_px, "BOS2", "close")
 
         pos = state.get("open_position")
-        if pos and pos.get("stop_mode") == "breakeven" and _safe_int(pos.get("total_shares_open"), 0) > 0:
-            active_sl = _safe_float(pos.get("sl_price"))
+        if pos and bool(pos.get("be_runner_active")) and _safe_int(pos.get("bos2_runner_shares"), 0) > 0:
+            active_sl = _safe_float(pos.get("be_runner_sl_price"))
             if active_sl is None:
                 active_sl = _safe_float(pos.get("breakeven_price"))
             if active_sl is not None:
-                be_armed_ts = pos.get("breakeven_armed_ts")
+                be_armed_ts = pos.get("be_runner_armed_ts") or pos.get("breakeven_armed_ts")
                 be_same_candle_as_arm = bool(be_armed_ts and last_ts and be_armed_ts == last_ts)
                 be_hit = False
                 if not be_same_candle_as_arm:
                     be_hit = (side == "long" and low_px is not None and low_px <= active_sl) or (side == "short" and high_px is not None and high_px >= active_sl)
                 if be_hit:
+                    exit_shares = _safe_int(pos.get("bos2_runner_shares"), 0)
                     if DEBUG_LOGS:
                         print(
                             f"[BOS_FVG_V1] breakeven stop hit | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
-                            f"Side={side} | BreakevenPrice={active_sl} | OpenShares={pos.get('total_shares_open')}"
+                            f"Side={side} | BreakevenPrice={active_sl} | ExitShares={exit_shares} | OpenShares={pos.get('total_shares_open')}"
                         )
-                    _close_trade(active_sl, "BREAKEVEN", "breakeven")
+                    if exit_shares > 0:
+                        pnl_partial = _close_partial_position(exit_shares, active_sl, "BREAKEVEN")
+                        pos["be_runner_active"] = False
+                        pos["bos2_runner_shares"] = 0
+                        pos["partial_exit_count"] = _safe_int(pos.get("partial_exit_count"), 0) + 1
+                        print(
+                            f"[BOS_FVG_V1] partial exit BREAKEVEN | Symbol={symbol} | TF={timeframe} | TradeID={pos.get('trade_id')} | "
+                            f"Side={side} | ExitReason=BREAKEVEN | ExitPct=25 | ExitPrice={active_sl} | ExitShares={exit_shares} | "
+                            f"RemainingSize={pos.get('total_shares_open')} | RealizedPnL={pnl_partial}"
+                        )
+                        if _safe_int(pos.get("total_shares_open"), 0) <= 0:
+                            _close_trade(active_sl, "BREAKEVEN", "breakeven")
 
         pos = state.get("open_position")
         if pos and _safe_int(pos.get("total_shares_open"), 0) > 0:
